@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetSage WebSocket Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .card {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            padding: 10px;
+            margin-top: 15px;
+            border-radius: 4px;
+        }
+        .status-pending {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .status-scanning {
+            background-color: #cce5ff;
+            color: #004085;
+        }
+        .status-processing {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-generating_report {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .status-completed {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-failed {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        #log {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 20px;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            font-family: monospace;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 3px;
+            border-bottom: 1px solid #eee;
+        }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(0,0,0,0.1);
+            border-top-color: #09f;
+            border-radius: 50%;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <h1>NetSage WebSocket Test Client</h1>
+    
+    <div class="card">
+        <h2>Connection Status</h2>
+        <div id="connection-status">Disconnected</div>
+        <button id="connect">Connect to WebSocket</button>
+        <button id="disconnect" disabled>Disconnect</button>
+    </div>
+    
+    <div class="card">
+        <h2>Create New Scan</h2>
+        <div class="form-group">
+            <label for="website-url">Website URL:</label>
+            <input type="text" id="website-url" placeholder="https://example.com">
+        </div>
+        <button id="submit-scan">Submit Scan</button>
+        <div id="scan-result" class="status"></div>
+    </div>
+    
+    <div class="card">
+        <h2>Monitor Scan Status</h2>
+        <div class="form-group">
+            <label for="request-id">Request ID:</label>
+            <input type="text" id="request-id" placeholder="Enter request ID">
+        </div>
+        <button id="subscribe">Subscribe to Updates</button>
+        <button id="unsubscribe">Unsubscribe</button>
+        <div id="scan-status" class="status"></div>
+    </div>
+    
+    <h2>Event Log</h2>
+    <div id="log"></div>
+    
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        // DOM elements
+        const connectBtn = document.getElementById('connect');
+        const disconnectBtn = document.getElementById('disconnect');
+        const connectionStatus = document.getElementById('connection-status');
+        const submitScanBtn = document.getElementById('submit-scan');
+        const websiteUrlInput = document.getElementById('website-url');
+        const scanResult = document.getElementById('scan-result');
+        const requestIdInput = document.getElementById('request-id');
+        const subscribeBtn = document.getElementById('subscribe');
+        const unsubscribeBtn = document.getElementById('unsubscribe');
+        const scanStatus = document.getElementById('scan-status');
+        const logEl = document.getElementById('log');
+        
+        // Global variables
+        let socket;
+        let activeSubscription = null;
+        
+        // Helper functions
+        function logEvent(message) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.classList.add('log-entry');
+            entry.textContent = `[${timeStr}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        function updateStatusUI(statusEl, status) {
+            statusEl.className = 'status';
+            statusEl.classList.add(`status-${status.toLowerCase()}`);
+            
+            let statusText;
+            switch(status) {
+                case 'pending':
+                    statusText = 'Pending - Scan is queued and waiting to start';
+                    break;
+                case 'scanning':
+                    statusText = 'Scanning - Scan is currently in progress';
+                    break;
+                case 'processing':
+                    statusText = 'Processing - Scan data is being processed';
+                    break;
+                case 'generating_report':
+                    statusText = 'Generating Report - Cybersecurity report is being generated';
+                    break;
+                case 'completed':
+                    statusText = 'Completed - Scan and report generation completed successfully';
+                    break;
+                case 'failed':
+                    statusText = 'Failed - Scan process encountered an error';
+                    break;
+                default:
+                    statusText = status;
+            }
+            
+            statusEl.innerHTML = `<strong>Status:</strong> ${statusText} ${status !== 'completed' && status !== 'failed' ? '<span class="spinner"></span>' : ''}`;
+        }
+        
+        // Event Handlers
+        connectBtn.addEventListener('click', () => {
+            // Connect to WebSocket server
+            socket = io('http://localhost:4000');
+            
+            socket.on('connect', () => {
+                connectionStatus.textContent = 'Connected';
+                connectionStatus.style.color = 'green';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                logEvent('Connected to WebSocket server');
+            });
+            
+            socket.on('disconnect', () => {
+                connectionStatus.textContent = 'Disconnected';
+                connectionStatus.style.color = 'red';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                logEvent('Disconnected from WebSocket server');
+            });
+            
+            socket.on('scanUpdate', (data) => {
+                logEvent(`Received update for scan ${data.requestId}: ${data.previousStatus} -> ${data.status}`);
+                if (activeSubscription === data.requestId) {
+                    updateStatusUI(scanStatus, data.status);
+                }
+            });
+            
+            socket.on('notification', (data) => {
+                logEvent(`Notification (${data.type}): ${data.message}`);
+            });
+            
+            socket.on('connect_error', (error) => {
+                logEvent(`Connection error: ${error.message}`);
+                connectionStatus.textContent = 'Connection Error';
+                connectionStatus.style.color = 'red';
+            });
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        });
+        
+        submitScanBtn.addEventListener('click', async () => {
+            const websiteUrl = websiteUrlInput.value.trim();
+            if (!websiteUrl) {
+                scanResult.textContent = 'Please enter a website URL';
+                scanResult.className = 'status status-failed';
+                return;
+            }
+            
+            try {
+                scanResult.innerHTML = 'Submitting scan...';
+                scanResult.className = 'status';
+                
+                const response = await fetch('http://localhost:4000/api/scan', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ website_url: websiteUrl })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    scanResult.innerHTML = `<strong>Success!</strong> Scan submitted with request ID: <code>${data.requestId}</code>`;
+                    scanResult.className = 'status status-pending';
+                    logEvent(`New scan created for ${websiteUrl} with ID: ${data.requestId}`);
+                    requestIdInput.value = data.requestId;
+                } else {
+                    scanResult.textContent = `Error: ${data.error || 'Unknown error'}`;
+                    scanResult.className = 'status status-failed';
+                }
+            } catch (error) {
+                scanResult.textContent = `Error: ${error.message || 'Could not connect to server'}`;
+                scanResult.className = 'status status-failed';
+            }
+        });
+        
+        subscribeBtn.addEventListener('click', () => {
+            const requestId = requestIdInput.value.trim();
+            if (!requestId) {
+                scanStatus.textContent = 'Please enter a request ID';
+                scanStatus.className = 'status status-failed';
+                return;
+            }
+            
+            if (!socket || !socket.connected) {
+                scanStatus.textContent = 'Please connect to WebSocket server first';
+                scanStatus.className = 'status status-failed';
+                return;
+            }
+            
+            // Subscribe to updates for this request ID
+            socket.emit('subscribe', requestId);
+            activeSubscription = requestId;
+            logEvent(`Subscribed to updates for scan ${requestId}`);
+            
+            // Fetch current status
+            fetch(`http://localhost:4000/api/scan-status/${requestId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateStatusUI(scanStatus, data.status);
+                    } else {
+                        scanStatus.textContent = `Error: ${data.error || 'Unknown error'}`;
+                        scanStatus.className = 'status status-failed';
+                    }
+                })
+                .catch(error => {
+                    scanStatus.textContent = `Error: ${error.message || 'Could not fetch status'}`;
+                    scanStatus.className = 'status status-failed';
+                });
+        });
+        
+        unsubscribeBtn.addEventListener('click', () => {
+            if (!activeSubscription || !socket || !socket.connected) {
+                return;
+            }
+            
+            socket.emit('unsubscribe', activeSubscription);
+            logEvent(`Unsubscribed from updates for scan ${activeSubscription}`);
+            activeSubscription = null;
+            scanStatus.textContent = '';
+            scanStatus.className = 'status';
+        });
+    </script>
+</body>
+</html>
