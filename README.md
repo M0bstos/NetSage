@@ -72,7 +72,7 @@ The system implements a state machine with the following flow:
 
 ## 👥 Contributors
 
-- [Your Name](https://github.com/yourusername) - Backend Development
+- [Harsh Nanda :)](https://github.com/yourusername) - Backend Development
 - [Frontend Developer](https://github.com/frontenddeveloper) - Frontend Implementation
 - [n8n Developer](https://github.com/n8ndeveloper) - n8n Integration
 
