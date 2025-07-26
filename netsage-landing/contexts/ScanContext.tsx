@@ -18,7 +18,7 @@ import {
   ScanResult,
   ApiError,
 } from "@/services/api"
-import { useWebSocket, useScanSubscription } from "@/contexts/WebSocketContext"
+import { useWebSocket } from "@/contexts/WebSocketContext"
 
 // Define scan state type
 export interface ScanState {
@@ -45,8 +45,29 @@ interface ScanContextType {
   resetScan: () => void
 }
 
-// Create context with default values
-const ScanContext = createContext<ScanContextType | undefined>(undefined)
+// Create context with a default value to avoid undefined
+const defaultContextValue: ScanContextType = {
+  scan: {
+    requestId: null,
+    url: null,
+    status: null,
+    progress: 0,
+    currentStep: "initialization",
+    error: null,
+    results: null
+  },
+  isScanning: false,
+  isSubmitting: false,
+  hasError: false,
+  hasResults: false,
+  startScan: async () => { throw new Error("Not initialized"); },
+  retryScan: async () => { throw new Error("Not initialized"); },
+  checkStatus: async () => { throw new Error("Not initialized"); },
+  fetchReport: async () => null,
+  resetScan: () => {}
+}
+
+const ScanContext = createContext<ScanContextType>(defaultContextValue)
 
 // Scan Provider Props
 interface ScanProviderProps {
@@ -165,7 +186,9 @@ export function ScanProvider({ children }: ScanProviderProps) {
   const handleScanUpdate = useCallback((data: ScanUpdate) => {
     console.log("Received scan update:", data)
     
-    if (data.requestId !== scan.requestId) return
+    // Store requestId in a variable to avoid dependency on scan object
+    const currentRequestId = scan.requestId
+    if (data.requestId !== currentRequestId) return
     
     setScan((prev) => ({
       ...prev,
@@ -179,17 +202,37 @@ export function ScanProvider({ children }: ScanProviderProps) {
     if (data.status === "completed") {
       fetchReportRef.current(data.requestId)
     }
-  }, [scan.requestId])
+  }, [])
   
-  // Handle subscription to scan updates with proper dependencies
-  const scanRequestId = scan.requestId; // Extract to avoid closure issues
+  // Get socket from WebSocket context only once
+  const { socket } = useWebSocket();
   
+  // Use a ref to track the current requestId to avoid stale closures
+  const currentRequestIdRef = useRef<string | null>(null);
+  
+  // Update the ref when requestId changes
   useEffect(() => {
-    if (!scanRequestId) return;
+    currentRequestIdRef.current = scan.requestId;
+  }, [scan.requestId]);
+  
+  // Handle subscription to scan updates with more stability
+  useEffect(() => {
+    // Use the ref to avoid dependency on full scan object
+    const scanRequestId = scan.requestId;
+    if (!scanRequestId || !socket) return;
     
+    // Avoid duplicate subscriptions
+    if (socket.hasListeners?.("scanUpdate")) {
+      console.log("Scan update listeners already exist, removing before resubscribing");
+      socket.off("scanUpdate");
+    }
+    
+    // Create a stable event handler that uses the ref
     const handleScanEvent = (data: any) => {
-      // Update the state only if it's for our current scan
-      if (data.requestId === scanRequestId) {
+      // Compare with current ref value to handle async updates correctly
+      if (data.requestId === currentRequestIdRef.current) {
+        console.log(`Processing update for scan ${data.requestId}:`, data.status);
+        
         setScan((prev) => ({
           ...prev,
           status: data.status,
@@ -205,12 +248,37 @@ export function ScanProvider({ children }: ScanProviderProps) {
       }
     };
     
-    // Create a subscription and get cleanup function
-    const unsubscribe = useScanSubscription(scanRequestId, handleScanEvent);
+    // Only emit subscribe if socket is connected
+    if (socket.connected) {
+      console.log(`Subscribing to updates for scan ${scanRequestId}`);
+      socket.emit("subscribe", scanRequestId);
+    } else {
+      console.log(`Socket not connected, will subscribe to ${scanRequestId} when connected`);
+      // Set up one-time connect handler
+      const handleConnect = () => {
+        console.log(`Socket now connected, subscribing to ${scanRequestId}`);
+        socket.emit("subscribe", scanRequestId);
+        socket.off("connect", handleConnect);
+      };
+      socket.on("connect", handleConnect);
+    }
+    
+    // Add scan update listener
+    socket.on("scanUpdate", handleScanEvent);
     
     // Return cleanup function
-    return unsubscribe;
-  }, [scanRequestId])
+    return () => {
+      console.log(`Cleaning up scan listeners for ${scanRequestId}`);
+      socket.off("scanUpdate", handleScanEvent);
+      socket.off("connect"); // Remove any pending connect handlers
+      
+      // Only emit unsubscribe if socket is connected
+      if (socket.connected) {
+        console.log(`Unsubscribing from updates for scan ${scanRequestId}`);
+        socket.emit("unsubscribe", scanRequestId);
+      }
+    };
+  }, [scan.requestId, socket])
 
   // Start a new scan
   const startScan = useCallback(async (url: string): Promise<string> => {
@@ -345,8 +413,12 @@ export function ScanProvider({ children }: ScanProviderProps) {
   useEffect(() => {
     // Only check status if WebSocket is not connected and we have an ongoing scan
     if (wsStatus !== "connected" && scan.requestId && isScanning) {
+      // Store requestId in a variable to avoid closure issues
+      const requestId = scan.requestId;
+      
       const intervalId = setInterval(() => {
-        checkStatus(scan.requestId!)
+        // Use the stored requestId instead of accessing scan.requestId directly
+        checkStatus(requestId)
           .then((status) => {
             // If scan reached terminal state, clear interval
             if (status === "completed" || status === "failed") {
@@ -383,8 +455,10 @@ export function ScanProvider({ children }: ScanProviderProps) {
 // Hook for using the Scan context
 export function useScan() {
   const context = useContext(ScanContext)
-  if (context === undefined) {
-    throw new Error("useScan must be used within a ScanProvider")
+  
+  if (context === defaultContextValue) {
+    console.warn("useScan called outside of ScanProvider, using default values");
   }
+  
   return context
 }

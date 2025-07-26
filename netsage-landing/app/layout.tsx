@@ -17,7 +17,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <style>{`
 html {
@@ -27,7 +27,7 @@ html {
 }
         `}</style>
       </head>
-      <body>
+      <body className="bg-neutral-950 text-neutral-100">
         <Providers>
           {children}
         </Providers>

@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useState, useMemo, useEffect } from "react"
+import { ClientPage } from "@/components/client/client-page"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -48,15 +49,42 @@ type ReportData = {
   compliance: ComplianceItem[];
 }
 
-export default function HomePage() {
+function HomePage() {
+  // Track client-side rendering to avoid hydration mismatch
+  const [isClient, setIsClient] = useState(false)
+  
   // Form state
   const [urlInput, setUrlInput] = useState("")
   const [showReportModal, setShowReportModal] = useState(false)
+  const [isContextReady, setIsContextReady] = useState(false)
   
-  // Get WebSocket context
-  const { status: wsStatus } = useWebSocket()
+  // Mark when component is mounted on client
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
+  
+  // Get WebSocket context - only on client side
+  const webSocketContext = useWebSocket()
+  const { status: wsStatus, socket } = webSocketContext
+  
+  // Add a more comprehensive socket status logger with debounce
+  useEffect(() => {
+    const logStatus = () => {
+      const connectionDetails = socket ? 
+        `ID: ${socket.id}, connected: ${socket.connected}, disconnected: ${socket.disconnected}` : 
+        'socket is null';
+      
+      console.log(`WebSocket status: ${wsStatus}, ${connectionDetails}`);
+    };
+    
+    // Delay logging to avoid excessive console messages during rapid updates
+    const timer = setTimeout(logStatus, 300);
+    
+    return () => clearTimeout(timer);
+  }, [wsStatus, socket]);
   
   // Get scan context
+  const scanContext = useScan()
   const {
     scan,
     isSubmitting,
@@ -67,7 +95,15 @@ export default function HomePage() {
     retryScan,
     resetScan,
     fetchReport,
-  } = useScan()
+  } = scanContext
+  
+  // Set context ready state after initial render
+  useEffect(() => {
+    setIsContextReady(true)
+    console.log('HomePage mounted with contexts:', { webSocketContext, scanContext });
+  }, [])
+
+  // Fallback UI is no longer needed as we handle this at the provider level
 
   // URL validation
   const isValidUrl = (url: string) => {
@@ -221,7 +257,7 @@ export default function HomePage() {
   }, [scan.results, scan.url])
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
+    <div className="min-h-screen">
       {/* Header */}
       <header className="border-b border-neutral-800/40 backdrop-blur-sm sticky top-0 z-50 bg-neutral-950/90">
         <div className="container mx-auto px-6 py-4">
@@ -603,5 +639,14 @@ export default function HomePage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// Export wrapped in ClientPage
+export default function Page() {
+  return (
+    <ClientPage>
+      <HomePage />
+    </ClientPage>
   )
 }

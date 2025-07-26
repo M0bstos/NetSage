@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Wifi, WifiOff, AlertCircle } from "lucide-react"
+import { useWebSocket } from "@/contexts/WebSocketContext"
 
 type ConnectionStatus = "connected" | "disconnected" | "connecting" | "error"
 
@@ -13,7 +14,8 @@ interface WebSocketStatusProps {
 
 export function WebSocketStatus({ status = "connected", className = "" }: WebSocketStatusProps) {
   const [currentStatus, setCurrentStatus] = useState<ConnectionStatus>(status)
-
+  
+  // Update status when prop changes
   useEffect(() => {
     setCurrentStatus(status)
   }, [status])
