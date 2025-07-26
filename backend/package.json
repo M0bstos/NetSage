@@ -8,7 +8,8 @@
     "dev": "nodemon index.js",
     "process-data": "node processors/processor.js",
     "clean-data": "node processors/cleanAndProcessData.js",
-    "generate-reports": "node processors/generateReport.js"
+    "generate-reports": "node processors/generateReport.js",
+    "tunnel": "node tunnel.js"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +26,8 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "localtunnel": "^2.0.2",
+    "ngrok": "^5.0.0-beta.2",
     "nodemon": "^3.1.10"
   }
 }

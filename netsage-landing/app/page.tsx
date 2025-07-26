@@ -360,7 +360,7 @@ function HomePage() {
 
               <div className="flex items-center space-x-8 pt-4">
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-400">50K+</div>
+                  <div className="text-2xl font-bold text-blue-400">10+</div>
                   <div className="text-sm text-neutral-500">Sites Scanned</div>
                 </div>
                 <div className="text-center">
@@ -378,7 +378,7 @@ function HomePage() {
             <div className="relative">
               <div className="relative overflow-hidden rounded-2xl bg-neutral-900/50 border border-neutral-800/50">
                 <Image
-                  src="/placeholder.svg?height=500&width=600&text=Security+Dashboard"
+                  src="\charlesdeluvio-Lks7vei-eAg-unsplash.jpg"
                   alt="NetSage Security Dashboard"
                   width={600}
                   height={500}
