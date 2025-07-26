@@ -33,7 +33,7 @@ NetSage/
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/NetSage.git
+   git clone https://github.com/M0bstos/NetSage.git
    cd NetSage
    ```
 
