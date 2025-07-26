@@ -1,7 +1,7 @@
 const { query } = require('../db');
 const { v4: uuidv4 } = require('uuid');
 const stateMachine = require('../services/stateMachine');
-const fetch = require('node-fetch');
+const axios = require('axios');
 
 /**
  * Controller for handling scan-related API endpoints
@@ -35,26 +35,27 @@ class ScanController {
         // Update state to scanning before triggering the scan
         await stateMachine.changeState(requestId, stateMachine.STATES.SCANNING);
         
-        // This would be the actual call to your n8n webhook
-        // Update with the proper n8n webhook URL
-        const n8nUrl = process.env.N8N_WEBHOOK_URL;
-        if (n8nUrl) {
-          const n8nResponse = await fetch(n8nUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId, website_url })
+        // This would be the actual call to our scanner service
+        // We're now using the scanner instead of n8n workflow
+        const scannerUrl = process.env.N8N_WEBHOOK_URL; // Reusing the same env variable for backward compatibility
+        if (scannerUrl) {
+          const scannerResponse = await axios.post(scannerUrl, {
+            website_url,
+            requestId // Pass the requestId so scanner can use it
+          }, {
+            headers: { 'Content-Type': 'application/json' }
           });
           
-          if (!n8nResponse.ok) {
-            throw new Error(`n8n webhook returned ${n8nResponse.status}`);
+          if (scannerResponse.status !== 200) {
+            throw new Error(`Scanner service returned ${scannerResponse.status}`);
           }
           
-          console.log(`N8N workflow triggered successfully for request ${requestId}`);
+          console.log(`Scanner service triggered successfully for request ${requestId}`);
         } else {
-          console.log(`[DEV] N8N webhook not configured, would trigger workflow for ${requestId}`);
+          console.log(`[DEV] Scanner service URL not configured, would trigger scan for ${requestId}`);
         }
       } catch (triggerError) {
-        console.error(`Error triggering n8n workflow for request ${requestId}:`, triggerError);
+        console.error(`Error triggering scanner for request ${requestId}:`, triggerError);
         // Set state to failed on error
         await stateMachine.changeState(requestId, stateMachine.STATES.FAILED);
       }

@@ -453,7 +453,7 @@ function HomePage() {
           {/* Feature Image */}
           <div className="mt-16 relative rounded-2xl overflow-hidden bg-neutral-900/50 border border-neutral-800/50">
             <Image
-              src="/placeholder.svg?height=400&width=1200&text=NetSage+Security+Reports"
+              src="/wallpaperflare.com_wallpaper.jpg"
               alt="NetSage Security Reports Dashboard"
               width={1200}
               height={400}

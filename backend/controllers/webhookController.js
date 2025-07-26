@@ -7,6 +7,13 @@ const webSocketService = require('../services/webSocketService');
  * Controller for handling webhook endpoints
  */
 class WebhookController {
+  constructor() {
+    // Bind methods to ensure 'this' context is preserved
+    this.handleScanResult = this.handleScanResult.bind(this);
+    this.handleProcessTrigger = this.handleProcessTrigger.bind(this);
+    this._processData = this._processData.bind(this);
+  }
+  
   /**
    * Handle scan result webhook
    * @param {Object} req - Express request object

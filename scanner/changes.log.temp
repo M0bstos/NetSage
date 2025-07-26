@@ -1,0 +1,144 @@
+# Scanner Changes Log
+
+This file will track changes to the scanner implementation.
+
+## 2025-07-28: Format Compatibility Update
+
+- Updated scanner output format to match backend expectations:
+  - Modified formatResultsForBackend in scanner/index.js to return array format instead of nested object
+  - Ensured compatibility with the backend processor's expected data structure
+  - Improved error handling for malformed input data
+- Enhanced backend webhook controller:
+  - Updated webhookController.js to properly handle array-formatted results
+  - Fixed context binding issues in async methods
+  - Added validation for both array and object format inputs
+- Documentation updates:
+  - Updated plan.md to reflect the correct expected output format
+  - Documented format changes in changes.log
+
+## 2025-07-27: CORS and Testing Improvements
+
+- Improved CORS configuration for better cross-origin communication:
+  - Added detailed CORS options for the Express server
+  - Configured headers to allow proper communication between services
+  - Added debugging logs for CORS-related issues
+- Created enhanced testing tools:
+  - Implemented `direct-test.html` with a user-friendly interface for API testing
+  - Added form controls for configuring scan parameters and server URLs
+  - Created test connection functionality to validate server accessibility
+  - Added visual indicators for connection status and scan results
+- Created `direct-server.js` to serve the test HTML file:
+  - Simple HTTP server with CORS support
+  - Configured to run on port 8090 (separate from main scanner)
+- Added `run-test-servers.ps1` PowerShell script:
+  - Launches both the scanner and test servers in separate windows
+  - Provides convenience for testing and debugging
+- Added additional test endpoint for troubleshooting:
+  - Implemented `/test` endpoint on the main server for connection testing
+  - Enhanced logging for request headers and connectivity issues
+
+## 2025-07-26: Backend Integration
+
+- Fixed integration with the NetSage backend:
+  - Updated callback URL configuration to match backend endpoint structure
+  - Changed from `http://localhost:3000/api/webhooks/scan-result` to `http://localhost:4000/webhooks/scan-result`
+  - Updated both `.env` and `.env.example` files with correct paths
+  - Confirmed callback URL compatibility with backend webhook controller
+- Enhanced error handling for result delivery:
+  - Added detailed logging of response status from callback endpoint
+  - Improved error messages for troubleshooting integration issues
+
+## 2025-07-26: Frontend Integration Fixes
+
+- Updated backend to properly communicate with the scanner:
+  - Modified backend's `.env` file to point N8N_WEBHOOK_URL to scanner's endpoint (http://localhost:3001/scan)
+  - Updated `scanController.js` to use axios instead of node-fetch
+  - Changed API call implementation to match scanner's expected request format
+  - Updated logging messages to reference scanner instead of n8n
+- Installed axios in the backend for reliable API communication
+- Ensured complete integration flow from frontend -> backend -> scanner -> backend
+- Updated documentation to reflect the full integration chain
+
+## 2025-07-26: Backend Processing Fixes
+
+- Fixed data processing issues in the webhook controller:
+  - Added proper method binding in the WebhookController class
+  - Ensured 'this' context is preserved in asynchronous method calls
+  - Fixed '_processData' method reference error
+- Enhanced error handling in the scan results processing flow
+- Improved reliability of the full integration workflow
+- Tested end-to-end functionality from frontend to scanner to backend
+
+## 2025-07-26: Data Format Alignment
+
+- Updated scanner output format to match the expected structure in docs/output.json:
+  - Changed from object structure with scan_data array to direct array format
+  - Added request_id as first element in the array
+  - Ensured port information format matches expected structure
+  - Added HTTP header information in the expected format
+- Updated webhook controller to accept both old and new data formats
+- Fixed data extraction in the backend processing pipeline
+- Improved compatibility between scanner and backend data processing
+
+## 2025-07-26: Project Initialization
+
+- Initialized NPM project with `npm init -y`
+- Installed core dependencies:
+  - express@5.1.0 - For webhook endpoint
+  - node-nmap@4.0.0 - For port and service scanning
+  - axios@1.11.0 - For HTTP requests and header analysis
+  - dotenv@17.2.1 - For environment variables
+- Installed development dependencies:
+  - nodemon@3.1.0 - For auto-reloading during development
+- Created basic project structure:
+  - /lib - For scanner core modules
+  - /test - For testing utilities
+- Added .env.example template with initial configuration
+- Added .gitignore file for Node.js projects
+- Updated package.json with better metadata and scripts:
+  - Added "start" and "dev" scripts
+  - Updated project description and keywords
+
+## 2025-07-26: Core Scanner Module Implementation
+
+- Implemented scanner core module (`lib/scanner.js`) with the following features:
+  - Port scanning functionality using node-nmap
+  - Service detection and version detection
+  - HTTP header analysis with security header evaluation
+  - URL parsing and validation
+  - Comprehensive error handling and timeout management
+  - JSON output formatting
+- Created test utility (`test/test-scanner.js`) for:
+  - Command-line testing of the scanner functionality
+  - Display of scan results in a readable format
+  - Option to save results to a JSON file
+
+## 2025-07-26: Integration Research and Plan Update
+
+- Analyzed existing backend code and integration requirements:
+  - Examined `output.json` and integration-guide.md
+  - Identified required output format to match backend expectations
+  - Confirmed Nmap as the primary required dependency
+- Updated project documentation:
+  - Enhanced README.md with integration details and output format
+  - Updated plan.md with more specific result formatter requirements
+  - Documented the expected JSON structure for backend compatibility
+
+## 2025-07-26: Webhook Interface Implementation
+
+- Implemented Express server for webhook interface (`index.js`):
+  - Created `/scan` endpoint to receive scan requests
+  - Added request parsing and validation
+  - Implemented scan process triggering
+  - Added callback functionality to send results to the main backend
+  - Implemented status tracking for scans
+  - Added utility endpoints for health checks and status queries
+- Added result formatting function to ensure compatibility with the backend:
+  - Proper structure with `request_id` and `scan_data` array
+  - Conversion of scan results to the expected format
+- Installed additional dependencies:
+  - uuid - For generating unique request IDs
+- Created HTML test client (`test/client/index.html`) for:
+  - Testing webhook endpoints manually
+  - Visualizing scan results and status
+  - Providing a simple interface for demonstration
