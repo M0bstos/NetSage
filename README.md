@@ -74,7 +74,7 @@ The system implements a state machine with the following flow:
 
 - [Harsh Nanda :)](https://github.com/M0bstos) - Backend Development
 - [Frontend Developer](https://github.com/frontenddeveloper) - Frontend Implementation
-- [n8n Developer](https://github.com/n8ndeveloper) - n8n Integration
+- [Param Shah <3](https://github.com/roaringspy) - n8n Integration
 
 ## 📄 License
 
