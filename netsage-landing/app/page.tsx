@@ -592,7 +592,7 @@ function HomePage() {
               <span className="text-xl font-bold text-neutral-100">NetSage</span>
             </div>
             <p className="text-neutral-500 text-center md:text-right">
-              &copy; 2024 NetSage. Effortless security insights for your website.
+              &copy; 2025 NetSage. Effortless security insights for your website.
             </p>
           </div>
         </div>

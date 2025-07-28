@@ -30,3 +30,6 @@ coverage/
 # Build output
 dist/
 build/
+
+# Scan results
+scan-results/

@@ -7,7 +7,7 @@ import { Providers } from './providers'
 
 export const metadata: Metadata = {
   title: 'NetSage',
-  description: 'Tracking the Internet for a Better Future',
+  description: 'Tracking the Internet for a Safer Future',
   generator: 'v0.dev',
 }
 
@@ -27,6 +27,7 @@ html {
 }
         `}</style>
       </head>
+  <link rel="icon" href="/face.png" sizes="any" />
       <body className="bg-neutral-950 text-neutral-100">
         <Providers>
           {children}

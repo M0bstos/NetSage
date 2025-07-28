@@ -3,11 +3,13 @@
  * 
  * This module implements the core scanning functionality for the NetSage website scanner.
  * It performs port scanning, service detection, version detection, and HTTP header analysis.
+ * It also integrates with Nuclei for vulnerability scanning.
  */
 
 const nmap = require('node-nmap');
 const axios = require('axios');
 const { URL } = require('url');
+const NucleiScanner = require('./nuclei');
 
 // Configure nmap path if necessary
 // nmap.nmapLocation = 'path/to/nmap'; // Uncomment and set if nmap is not in PATH
@@ -19,11 +21,22 @@ class Scanner {
    * @param {number} options.timeout - Timeout in milliseconds for scan operations
    * @param {string} options.ports - Comma-separated list of ports to scan
    * @param {boolean} options.aggressive - Whether to use aggressive scanning techniques
+   * @param {boolean} options.enableNuclei - Whether to enable Nuclei vulnerability scanning
+   * @param {Object} options.nucleiOptions - Options for Nuclei scanning
    */
   constructor(options = {}) {
     this.timeout = options.timeout || 30000; // Default 30 seconds
     this.ports = options.ports || '21,22,25,80,443,3306,8080,8443';
     this.aggressive = options.aggressive || false;
+    this.enableNuclei = options.enableNuclei || false;
+    
+    // Initialize Nuclei scanner if enabled
+    if (this.enableNuclei) {
+      this.nucleiScanner = new NucleiScanner({
+        timeout: options.timeout || 120000, // Use a longer timeout for Nuclei
+        ...options.nucleiOptions
+      });
+    }
   }
 
   /**
@@ -70,29 +83,45 @@ class Scanner {
         scanOptions = ['-sV', '-p', this.ports];
       }
       
+      // Add -Pn flag to skip host discovery (assume host is up)
+      // This helps with hosts that block ping probes
+      scanOptions.push('-Pn');
+      
+      console.log(`Starting Nmap scan on ${hostname} with options: ${scanOptions.join(' ')}`);
       const scan = new nmap.NmapScan(hostname, scanOptions);
+      
+      // Increase timeout for Nmap scan
+      const nmapTimeout = this.timeout * 2; // Double the timeout for Nmap
+      console.log(`Setting Nmap timeout to ${nmapTimeout}ms`);
       
       // Setup timeout
       const timeoutId = setTimeout(() => {
+        console.log(`Nmap scan timeout after ${nmapTimeout}ms, cancelling scan...`);
         scan.cancelScan();
-        reject(new Error(`Scan timeout after ${this.timeout}ms`));
-      }, this.timeout);
+        // Instead of rejecting with error, resolve with empty result
+        resolve([]);
+      }, nmapTimeout);
       
       scan.on('complete', (data) => {
         clearTimeout(timeoutId);
+        console.log(`Nmap scan completed successfully for ${hostname}`);
         resolve(this.formatPortResults(data));
       });
       
       scan.on('error', (error) => {
         clearTimeout(timeoutId);
-        reject(new Error(`Port scan error: ${error.toString()}`));
+        console.error(`Nmap error: ${error.toString()}`);
+        // Instead of rejecting with error, resolve with empty result
+        resolve([]);
       });
       
       try {
         scan.startScan();
       } catch (error) {
         clearTimeout(timeoutId);
-        reject(new Error(`Failed to start scan: ${error.toString()}`));
+        console.error(`Failed to start Nmap scan: ${error.toString()}`);
+        // Instead of rejecting with error, resolve with empty result
+        resolve([]);
       }
     });
   }
@@ -206,6 +235,32 @@ class Scanner {
   }
 
   /**
+   * Perform a Nuclei vulnerability scan
+   * @param {string} target - URL to scan
+   * @returns {Promise<Object>} Nuclei scan results
+   */
+  async runNucleiScan(target) {
+    if (!this.enableNuclei || !this.nucleiScanner) {
+      return { enabled: false };
+    }
+    
+    try {
+      console.log(`Starting Nuclei scan for ${target}`);
+      const results = await this.nucleiScanner.scan(target);
+      console.log(`Completed Nuclei scan for ${target}: found ${results.findings?.length || 0} findings`);
+      return results;
+    } catch (error) {
+      console.error(`Error in Nuclei scan: ${error.message}`);
+      return {
+        enabled: true,
+        success: false,
+        error: error.message,
+        findings: []
+      };
+    }
+  }
+
+  /**
    * Perform a comprehensive scan on a target
    * @param {string} target - URL or hostname to scan
    * @returns {Promise<Object>} Complete scan results
@@ -216,10 +271,20 @@ class Scanner {
       const { hostname, protocol } = this.parseTarget(target);
       
       // Run port scanning and HTTP header analysis in parallel
-      const [portResults, httpResults] = await Promise.allSettled([
+      const scanPromises = [
         this.scanPorts(target),
         protocol.startsWith('http') ? this.analyzeHttpHeaders(target) : Promise.resolve(null)
-      ]);
+      ];
+      
+      // Add Nuclei scan if enabled
+      if (this.enableNuclei && protocol.startsWith('http')) {
+        scanPromises.push(this.runNucleiScan(target));
+      } else {
+        scanPromises.push(Promise.resolve({ enabled: false }));
+      }
+      
+      // Wait for all scans to complete
+      const [portResults, httpResults, nucleiResults] = await Promise.allSettled(scanPromises);
 
       // Calculate scan duration
       const scanDuration = Date.now() - startTime;
@@ -235,6 +300,7 @@ class Scanner {
         scanDurationMs: scanDuration,
         ports: portResults.status === 'fulfilled' ? portResults.value : [],
         http: httpResults.status === 'fulfilled' ? httpResults.value : null,
+        nuclei: nucleiResults.status === 'fulfilled' ? nucleiResults.value : { enabled: false },
         errors: []
       };
 
@@ -250,6 +316,13 @@ class Scanner {
         result.errors.push({
           component: 'http_analyzer',
           message: httpResults.reason.message
+        });
+      }
+      
+      if (nucleiResults.status === 'rejected' && this.enableNuclei && protocol.startsWith('http')) {
+        result.errors.push({
+          component: 'nuclei_scanner',
+          message: nucleiResults.reason.message
         });
       }
 
