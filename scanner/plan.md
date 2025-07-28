@@ -45,7 +45,7 @@ This document outlines the phased approach to enhance the NetSage scanner's capa
 ## Phase 3: Nuclei Enhancement
 
 ### Step 1: Optimize Nuclei Configuration
-- Increase scan timeout to 300s minimum
+- Increase scan timeout to 600s minimum
 - Implement rate limiting (`-rate-limit` parameter)
 - Add retry mechanism for failed template executions
 - Configure proper template selection based on target type

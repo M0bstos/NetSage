@@ -47,6 +47,8 @@ class Scanner {
     this.ports = options.ports || '21,22,25,80,443,3306,8080,8443';
     this.aggressive = options.aggressive || false;
     this.enableNuclei = options.enableNuclei || false;
+    this.enableUdpScan = options.enableUdpScan !== false; // Enable UDP scanning by default
+    this.udpPorts = options.udpPorts || '53,67,68,69,123,137,138,139,161,162,445,500,514,520,631,1434,1900,5353';
     
     // Initialize Nuclei scanner if enabled
     if (this.enableNuclei) {
@@ -199,22 +201,82 @@ class Scanner {
   }
 
   /**
-   * Perform port and service scanning on a target with enhanced timeout handling
+   * Perform port and service scanning on a target with advanced Nmap options
    * @param {string} target - URL or hostname to scan
+   * @param {Object} options - Optional override options for this scan
    * @returns {Promise<Object>} Scan results
    */
-  async scanPorts(target) {
+  async scanPorts(target, options = {}) {
     const { hostname } = this.parseTarget(target);
+    const scanType = options.scanType || (this.aggressive ? 'aggressive' : 'standard');
+    const scanProtocol = options.protocol || 'tcp';
+    const tcpScanMethod = options.tcpScanMethod || 'syn'; // syn or connect
     
     return new Promise((resolve, reject) => {
       let scanOptions = [];
       
-      if (this.aggressive) {
-        // Aggressive scan with version detection and OS detection
-        scanOptions = ['-sV', '-O', '--version-all', '-p', this.ports];
+      // First, set the scan method - TCP (SYN or Connect) or UDP
+      if (scanProtocol === 'udp') {
+        scanOptions.push('-sU'); // UDP scan
+        console.log('Performing UDP scan');
+      } else if (tcpScanMethod === 'connect') {
+        scanOptions.push('-sT'); // TCP connect scan (more likely to work through firewalls)
+        console.log('Performing TCP connect scan');
       } else {
-        // Standard scan with basic version detection
-        scanOptions = ['-sV', '-p', this.ports];
+        scanOptions.push('-sS'); // Default SYN stealth scan
+        console.log('Performing TCP SYN scan');
+      }
+      
+      // Select scan type based on configuration and context
+      switch (scanType) {
+        case 'aggressive':
+          // Aggressive scan with version detection, OS detection
+          scanOptions.push(
+            '-sV',                  // Service/version detection
+            '-O',                   // OS detection
+            '--version-all',        // Try every probe for version detection
+            '-p', this.ports,       // Target ports
+            '--min-parallelism=10'  // Increase parallel probe operations
+          );
+          break;
+          
+        case 'stealth':
+          // Stealthy scan focused on evasion
+          scanOptions.push(
+            '-sV',                  // Service/version detection
+            '-p', this.ports,       // Target ports
+            '--data-length=24',     // Add random data to packets to avoid detection
+            '--randomize-hosts',    // Scan ports in random order
+            '--spoof-mac=0'         // Randomize MAC address if possible
+          );
+          break;
+          
+        case 'script':
+          // Script-focused scan with banner grabbing and HTTP header analysis
+          scanOptions.push(
+            '-sV',                  // Service/version detection 
+            '-p', this.ports,       // Target ports
+            '--script=banner,http-headers,http-title,ssl-enum-ciphers' // Run specific scripts
+          );
+          break;
+          
+        case 'quick':
+          // Fast scan with minimal footprint
+          scanOptions.push(
+            '-F',                   // Fast scan - fewer ports
+            '--min-rate=300'        // Send packets no slower than 300 per second
+          );
+          break;
+          
+        case 'standard':
+        default:
+          // Standard scan with better options than the original
+          scanOptions.push(
+            '-sV',                  // Service/version detection
+            '-p', this.ports,       // Target ports
+            '--version-intensity=7' // More intensive version detection (0-9 scale)
+          );
+          break;
       }
       
       // Add -Pn flag to skip host discovery (assume host is up)
@@ -230,11 +292,11 @@ class Scanner {
       scanOptions.push('--max-retries', '2');
       
       // Use timing template based on response profile
-      let timingTemplate = '4'; // Default is T4 (aggressive)
+      let timingTemplate = '3'; // Default is T3 (normal)
       if (this.targetResponseCategory === 'slow') {
-        timingTemplate = '3'; // T3 (normal) for slow targets to avoid overloading
+        timingTemplate = '2'; // T2 (sneaky) for slow targets to avoid overloading
       } else if (this.targetResponseCategory === 'responsive') {
-        timingTemplate = '5'; // T5 (insane) for responsive targets
+        timingTemplate = '4'; // T4 (aggressive) for responsive targets
       }
       scanOptions.push(`-T${timingTemplate}`);
       
@@ -258,7 +320,7 @@ class Scanner {
       scan.on('complete', (data) => {
         clearTimeout(timeoutId);
         console.log(`Nmap scan completed successfully for ${hostname}`);
-        resolve(this.formatPortResults(data));
+        resolve(this.formatPortResults(data, scanProtocol));
       });
       
       scan.on('error', (error) => {
@@ -297,23 +359,138 @@ class Scanner {
   }
 
   /**
-   * Format port scanning results
+   * Run a service-specific Nmap script scan on an open port
+   * This enhances port information with additional service details
+   * 
+   * @param {string} hostname - Target hostname
+   * @param {number} port - Target port
+   * @param {string} service - Detected service name
+   * @returns {Promise<Object>} Enhanced service information
+   */
+  async runServiceScripts(hostname, port, service) {
+    // Skip if port or service is invalid
+    if (!port || !service || service === 'unknown') {
+      return null;
+    }
+    
+    // Select scripts based on service
+    let scripts = [];
+    switch (service.toLowerCase()) {
+      case 'http':
+      case 'https':
+        scripts = ['http-headers', 'http-title', 'http-server-header', 'http-methods', 'http-generator'];
+        break;
+      case 'ssh':
+        scripts = ['ssh-auth-methods', 'ssh-hostkey', 'ssh2-enum-algos'];
+        break;
+      case 'ftp':
+        scripts = ['ftp-anon', 'ftp-bounce', 'ftp-syst'];
+        break;
+      case 'smtp':
+        scripts = ['smtp-commands', 'smtp-enum-users', 'smtp-open-relay'];
+        break;
+      case 'mysql':
+      case 'ms-sql':
+      case 'oracle':
+        scripts = ['mysql-info', 'ms-sql-info', 'oracle-tns-info'];
+        break;
+      default:
+        scripts = ['banner'];
+        break;
+    }
+    
+    return new Promise((resolve, reject) => {
+      const scriptParam = scripts.join(',');
+      const scanOptions = [
+        '-sS',                // SYN stealth scan
+        '-Pn',                // Skip host discovery
+        '-p', port.toString(),  // Specific port
+        '--script', scriptParam, // Selected scripts
+        '-T2'                 // Timing template (sneaky)
+      ];
+      
+      console.log(`Running service scripts on ${hostname}:${port} (${service}): ${scriptParam}`);
+      
+      const scan = new nmap.NmapScan(hostname, scanOptions);
+      
+      const scriptTimeout = 30000; // 30 seconds timeout for script scanning
+      const timeoutId = setTimeout(() => {
+        console.log(`Script scan timeout after ${scriptTimeout}ms, cancelling scan...`);
+        scan.cancelScan();
+        resolve(null); // Resolve with null on timeout (non-critical)
+      }, scriptTimeout);
+      
+      scan.on('complete', (data) => {
+        clearTimeout(timeoutId);
+        
+        // Extract script results
+        let scriptResults = {};
+        try {
+          if (data && data.length > 0 && data[0].openPorts && data[0].openPorts.length > 0) {
+            const portData = data[0].openPorts[0];
+            
+            // Extract script results if available
+            if (portData.scripts) {
+              scriptResults = portData.scripts.reduce((acc, script) => {
+                acc[script.name] = script.result;
+                return acc;
+              }, {});
+            }
+            
+            // Extract other port information
+            if (portData.service) scriptResults.service = portData.service;
+            if (portData.version) scriptResults.version = portData.version;
+            if (portData.banner) scriptResults.banner = portData.banner;
+          }
+        } catch (err) {
+          console.error(`Error processing script results: ${err.message}`);
+        }
+        
+        resolve(scriptResults);
+      });
+      
+      scan.on('error', (error) => {
+        clearTimeout(timeoutId);
+        console.error(`Script scan error: ${error.toString()}`);
+        resolve(null); // Resolve with null on error (non-critical)
+      });
+      
+      try {
+        scan.startScan();
+      } catch (error) {
+        clearTimeout(timeoutId);
+        console.error(`Failed to start script scan: ${error.toString()}`);
+        resolve(null);
+      }
+    });
+  }
+
+  /**
+   * Format port scanning results with enhanced information
    * @param {Array} data - Raw nmap scan results
+   * @param {string} scanProtocol - The protocol used in scanning (tcp or udp)
    * @returns {Array} Formatted port results
    */
-  formatPortResults(data) {
+  formatPortResults(data, scanProtocol = 'tcp') {
     if (!data || !data.length || !data[0] || !data[0].openPorts) {
       return [];
     }
 
     return data[0].openPorts.map(port => {
+      // Extract any script results if available
+      const scriptData = port.scripts ? port.scripts.reduce((acc, script) => {
+        acc[script.name] = script.result;
+        return acc;
+      }, {}) : {};
+      
       return {
         port: port.port,
-        protocol: port.protocol || 'tcp',
+        protocol: port.protocol || scanProtocol,
         service: port.service || 'unknown',
         version: port.version || '',
         state: 'open',
-        banner: port.banner || ''
+        banner: port.banner || '',
+        script_results: Object.keys(scriptData).length > 0 ? scriptData : undefined
       };
     });
   }
@@ -471,6 +648,28 @@ class Scanner {
    * @param {string} target - URL or hostname to scan
    * @returns {Promise<Object>} Complete scan results
    */
+  /**
+   * Run a UDP scan to find services that use UDP protocol
+   * @param {string} target - Target to scan
+   * @param {Object} options - Scan options
+   * @returns {Promise<Array>} UDP port results
+   */
+  async scanUdpPorts(target, options = {}) {
+    if (!this.enableUdpScan) {
+      console.log('UDP scanning is disabled, skipping');
+      return [];
+    }
+    
+    console.log(`Starting UDP scan on ${target}`);
+    const scanType = options.scanType || 'quick'; // Use quick scan for UDP by default
+    
+    return this.scanPorts(target, {
+      scanType: scanType,
+      protocol: 'udp',
+      ports: this.udpPorts
+    });
+  }
+
   async scan(target) {
     try {
       // Record start time for overall timeout management
@@ -517,9 +716,17 @@ class Scanner {
       
       // Primary scan Promise
       const scanPromise = (async () => {
+        // Select the appropriate scan type based on target and response category
+        let initialScanType = this.aggressive ? 'aggressive' : 'standard';
+        
+        // If target seems protected or slow, start with a more stealthy scan
+        if (this.targetResponseCategory === 'slow') {
+          initialScanType = 'stealth';
+        }
+        
         // Run port scanning and HTTP header analysis in parallel
         const scanPromises = [
-          this.scanPorts(target),
+          this.scanPorts(target, { scanType: initialScanType }),
           protocol.startsWith('http') ? this.analyzeHttpHeaders(target) : Promise.resolve(null)
         ];
         
@@ -530,8 +737,131 @@ class Scanner {
           scanPromises.push(Promise.resolve({ enabled: false }));
         }
         
-        // Wait for all scans to complete
-        return await Promise.allSettled(scanPromises);
+        // Wait for the initial scans to complete
+        const initialResults = await Promise.allSettled(scanPromises);
+        const [portResults, httpResults, nucleiResults] = initialResults;
+        
+        // Port scan fallback strategies
+        let allPortResults = [];
+        
+        // If the initial scan failed completely or found no ports, try additional strategies
+        if (portResults.status === 'rejected' || 
+           (portResults.status === 'fulfilled' && (!portResults.value || portResults.value.length === 0))) {
+          
+          console.log('Initial TCP scan did not find results, trying fallback strategies...');
+          let fallbackResults = [];
+          
+          // Try script scan first as a fallback
+          if (this.targetResponseCategory !== 'slow') {
+            console.log('Trying script-based scan...');
+            try {
+              fallbackResults = await this.scanPorts(target, { scanType: 'script' });
+              if (fallbackResults && fallbackResults.length > 0) {
+                console.log(`Script scan found ${fallbackResults.length} open ports`);
+                allPortResults = allPortResults.concat(fallbackResults);
+              }
+            } catch (scriptError) {
+              console.error('Script scan failed:', scriptError.message);
+            }
+          }
+          
+          // If still no results or script scan failed, try TCP connect scan
+          if (allPortResults.length === 0) {
+            console.log('Trying TCP connect scan...');
+            try {
+              fallbackResults = await this.scanPorts(target, { 
+                scanType: 'standard', 
+                tcpScanMethod: 'connect' // Use TCP connect scan instead of SYN
+              });
+              if (fallbackResults && fallbackResults.length > 0) {
+                console.log(`TCP connect scan found ${fallbackResults.length} open ports`);
+                allPortResults = allPortResults.concat(fallbackResults);
+              }
+            } catch (connectError) {
+              console.error('TCP connect scan failed:', connectError.message);
+            }
+          }
+          
+          // If still nothing, try a quick scan
+          if (allPortResults.length === 0) {
+            console.log('Trying quick scan...');
+            try {
+              fallbackResults = await this.scanPorts(target, { scanType: 'quick' });
+              if (fallbackResults && fallbackResults.length > 0) {
+                console.log(`Quick scan found ${fallbackResults.length} open ports`);
+                allPortResults = allPortResults.concat(fallbackResults);
+              }
+            } catch (quickError) {
+              console.error('Quick scan failed:', quickError.message);
+            }
+          }
+          
+          // If original port scan was fulfilled but empty, update it with our fallback results
+          if (portResults.status === 'fulfilled') {
+            portResults.value = allPortResults;
+          }
+        } else if (portResults.status === 'fulfilled') {
+          // If original scan was successful, use those results as the base
+          allPortResults = portResults.value;
+        }
+        // Add UDP scanning to complement TCP scanning
+        let udpResults = [];
+        try {
+          // Only perform UDP scanning if we have TCP results or we're desperate for results
+          if (allPortResults.length > 0 || this.aggressive) {
+            console.log('Performing UDP port scan for complementary services...');
+            udpResults = await this.scanUdpPorts(target);
+            if (udpResults && udpResults.length > 0) {
+              console.log(`UDP scan found ${udpResults.length} open ports`);
+              // Add UDP ports to the overall results
+              allPortResults = allPortResults.concat(udpResults);
+            }
+          }
+        } catch (udpError) {
+          console.error('UDP scan failed:', udpError.message);
+        }
+        
+        // Update portResults.value with all accumulated port results
+        if (portResults.status === 'fulfilled') {
+          portResults.value = allPortResults;
+        }
+        
+        // Run service-specific script scans if we found ports
+        if (allPortResults.length > 0) {
+          // Only scan the first 3 ports to avoid taking too long
+          const portsToScan = allPortResults.slice(0, 3);
+          const scriptPromises = [];
+          
+          for (const port of portsToScan) {
+            const scriptPromise = this.runServiceScripts(hostname, port.port, port.service)
+              .then(scriptResults => {
+                if (scriptResults) {
+                  // Enhance the port object with script results
+                  port.script_results = scriptResults;
+                  
+                  // Update service and version if more specific info found
+                  if (scriptResults.service && scriptResults.service !== 'unknown') {
+                    port.service = scriptResults.service;
+                  }
+                  if (scriptResults.version) {
+                    port.version = scriptResults.version;
+                  }
+                  if (scriptResults.banner) {
+                    port.banner = scriptResults.banner;
+                  }
+                }
+                return port;
+              });
+            
+            scriptPromises.push(scriptPromise);
+          }
+          
+          // Wait for service script scans to complete
+          console.log(`Running service-specific script scans for ${scriptPromises.length} ports...`);
+          await Promise.allSettled(scriptPromises);
+        }
+        
+        return [portResults, httpResults, nucleiResults];
       })();
       
       // Race between the scan completing and the overall timeout

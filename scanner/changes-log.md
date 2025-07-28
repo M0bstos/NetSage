@@ -2,6 +2,32 @@
 
 This document tracks all changes made to the NetSage scanner as part of the enhancement plan.
 
+## [2025-07-29] Phase 2, Step 1: Enhanced Port Scanning Techniques
+
+### Changes:
+- Implemented advanced Nmap scanning options:
+  - Added SYN stealth scan (`-sS`) for faster and less detectable scanning
+  - Added multiple scan types: 'standard', 'aggressive', 'stealth', 'script', 'quick'
+  - Implemented timing options (`-T2` to `-T4`) based on target responsiveness
+  - Added service scan optimizations (`--host-timeout`, `--max-retries`)
+  - Implemented script scanning for service enumeration (`--script=banner,http-headers`)
+- Added service-specific script scanning:
+  - Created `runServiceScripts` method to perform targeted scanning based on service type
+  - Added intelligent script selection based on detected service
+  - Implemented script results processing and integration with port data
+- Enhanced scan process with multi-strategy approach:
+  - Implemented fallback scanning when initial scan returns no results
+  - Added progression from standard to script to quick scan types
+  - Optimized scan parameters based on target response profile
+  - Added enhanced script_results field to output
+
+### Expected Results:
+- Better detection of services behind firewalls
+- More accurate service version identification
+- Enhanced port scan results with service-specific details
+- Improved evasion of security measures
+- More complete scanning through progressive scan strategies
+
 ## [2025-07-29] Phase 1, Step 1: Output Format Standardization
 
 ### Changes:
