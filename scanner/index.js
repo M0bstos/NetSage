@@ -60,11 +60,61 @@ const activeScans = new Map();
  * @returns {object} - Formatted results for the backend
  */
 function formatResultsForBackend(requestId, scanResults) {
+  // Initialize the formatted results with consistent structure
   const formattedResults = {
     request_id: requestId,
     scan_data: [],
     scan_timestamp: new Date().toISOString(),
-    scan_duration_ms: scanResults.scanDurationMs || 0
+    scan_duration_ms: scanResults.scanDurationMs || 0,
+    // Always include scan_metadata section
+    scan_metadata: {
+      target_url: scanResults.target.original || "",
+      hostname: scanResults.target.hostname || "",
+      protocol: scanResults.target.protocol || "",
+      scan_techniques: {
+        port_scan: scanResults.ports !== undefined,
+        http_analysis: scanResults.http !== undefined,
+        vulnerability_scan: scanResults.nuclei && scanResults.nuclei.enabled !== false
+      },
+      // Add scan status information if available
+      scan_status: scanResults.scan_status || {
+        port_scan: { success: true, results_found: scanResults.ports && scanResults.ports.length > 0 },
+        http_analysis: { success: scanResults.http !== null },
+        vulnerability_scan: { 
+          success: scanResults.nuclei && scanResults.nuclei.findings !== undefined,
+          results_found: scanResults.nuclei && scanResults.nuclei.findings && scanResults.nuclei.findings.length > 0
+        }
+      }
+    },
+    // Include errors section
+    errors: scanResults.errors || [],
+    // Always include http_security section (even if empty)
+    http_security: {
+      target: scanResults.target.hostname || "",
+      headers: {
+        hasStrictTransportSecurity: false,
+        hasContentSecurityPolicy: false,
+        hasXContentTypeOptions: false,
+        hasXFrameOptions: false,
+        hasXXSSProtection: false,
+        hasReferrerPolicy: false,
+        hasPermissionsPolicy: false,
+        strictTransportSecurityValue: null,
+        contentSecurityPolicyValue: null,
+        xContentTypeOptionsValue: null,
+        xFrameOptionsValue: null,
+        xxssProtectionValue: null,
+        referrerPolicyValue: null,
+        permissionsPolicyValue: null
+      }
+    },
+    // Always include vulnerabilities section
+    vulnerabilities: [],
+    // Always include vulnerability summary
+    vulnerability_summary: {
+      total_count: 0,
+      by_severity: {}
+    }
   };
 
   // Extract target hostname
@@ -78,8 +128,8 @@ function formatResultsForBackend(requestId, scanResults) {
         target: target,
         port: parseInt(port.port),
         protocol: port.protocol || 'tcp',
-        service: port.service,
-        product: port.service,  // Default to service name if no product specified
+        service: port.service || 'unknown',
+        product: port.service || 'unknown',  // Always include product field
         version: port.version || '',
         state: port.state || 'open',
         banner: port.banner || ''
@@ -87,9 +137,8 @@ function formatResultsForBackend(requestId, scanResults) {
     });
   }
 
-  // If HTTP information is available and no ports were found,
-  // add an entry for the HTTP service
-  if (scanResults.http && formattedResults.scan_data.length === 0) {
+  // Add HTTP service information regardless of port scan results
+  if (scanResults.http) {
     // Extract port from HTTP URL or use default based on protocol
     let port = scanResults.target.port;
     if (!port) {
@@ -97,22 +146,45 @@ function formatResultsForBackend(requestId, scanResults) {
     }
     const service = scanResults.target.protocol === 'https' ? 'https' : 'http';
     
-    console.log(`Adding HTTP service information on port ${port}`);
-    formattedResults.scan_data.push({
-      target: target,
-      port: parseInt(port),
-      service: service,
-      product: scanResults.http.server !== 'unknown' ? scanResults.http.server : service,
-      version: ''
-    });
+    // Only add if not already added from port scan
+    if (!formattedResults.scan_data.some(item => 
+      (item.port === parseInt(port) && (item.service === 'http' || item.service === 'https')))) {
+      console.log(`Adding HTTP service information on port ${port}`);
+      formattedResults.scan_data.push({
+        target: target,
+        port: parseInt(port) || null, // Handle case when port cannot be parsed
+        service: service,
+        product: scanResults.http.server !== 'unknown' ? scanResults.http.server : service,
+        version: '',
+        state: 'open',
+        banner: ''
+      });
+    }
 
-    // Add security headers information if available
+    // Always update the http_security section with actual data if available
     if (scanResults.http.securityHeaders) {
       formattedResults.http_security = {
         target: target,
         headers: scanResults.http.securityHeaders
       };
     }
+  }
+
+  // If no service found, still include at least one entry with protocol information
+  if (formattedResults.scan_data.length === 0) {
+    const defaultProtocol = scanResults.target.protocol || 'http';
+    const defaultPort = defaultProtocol === 'https' ? 443 : 80;
+    
+    console.log(`No services detected, adding default ${defaultProtocol} service information`);
+    formattedResults.scan_data.push({
+      target: target,
+      port: null, // When port detection fails completely
+      service: defaultProtocol,
+      product: defaultProtocol,
+      version: '',
+      state: 'unknown',
+      banner: ''
+    });
   }
   
   // Add Nuclei findings if available
@@ -140,7 +212,7 @@ function formatResultsForBackend(requestId, scanResults) {
     formattedResults.vulnerabilities = scanResults.nuclei.findings.map(finding => {
       return {
         target: target,
-        name: finding.name,
+        name: finding.name || 'Unknown',
         severity: finding.severity || 'unknown',
         type: finding.type || 'unknown',
         description: finding.description || '',
@@ -152,7 +224,7 @@ function formatResultsForBackend(requestId, scanResults) {
       };
     });
     
-    // Add summary information
+    // Update vulnerability summary
     formattedResults.vulnerability_summary = {
       total_count: scanResults.nuclei.findings.length,
       by_severity: {}
@@ -161,12 +233,18 @@ function formatResultsForBackend(requestId, scanResults) {
     severityOrder.forEach(sev => {
       if (bySeverity[sev]) {
         formattedResults.vulnerability_summary.by_severity[sev] = bySeverity[sev].length;
+      } else {
+        // Include all severity levels with 0 count for consistency
+        formattedResults.vulnerability_summary.by_severity[sev] = 0;
       }
     });
   } else {
     console.log('No vulnerability findings to report');
-    // Add empty vulnerabilities array to maintain consistent format
-    formattedResults.vulnerabilities = [];
+    // Initialize summary with zero counts for all severity levels
+    const severityOrder = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
+    severityOrder.forEach(sev => {
+      formattedResults.vulnerability_summary.by_severity[sev] = 0;
+    });
   }
 
   return formattedResults;
@@ -273,22 +351,43 @@ async function runScan(target, requestId) {
       console.log(`Running standard scan with templates: ${templates.join(', ')}`);
     }
     
-    // Set longer timeout for comprehensive scans
-    const scanTimeout = isComprehensive ? 
-      parseInt(process.env.COMPREHENSIVE_SCAN_TIMEOUT || '600000') : 
-      parseInt(process.env.DEFAULT_SCAN_TIMEOUT || '300000');
+    // Enhanced timeout configuration with environment variables
+    // These timeouts are separate for each component of the scan
     
-    // Create scanner with enhanced settings
+    // Base timeouts - configured through environment variables
+    const basePortScanTimeout = parseInt(process.env.PORT_SCAN_TIMEOUT || '120000');  // 2 minutes default
+    const baseHttpTimeout = parseInt(process.env.HTTP_SCAN_TIMEOUT || '60000');       // 1 minute default
+    const baseNucleiTimeout = parseInt(process.env.NUCLEI_SCAN_TIMEOUT || '300000');  // 5 minutes default
+    
+    // Comprehensive scan multipliers
+    const comprehensiveMultiplier = isComprehensive ? 2 : 1; // Double timeouts for comprehensive scans
+    
+    // Calculate final timeouts
+    const portScanTimeout = basePortScanTimeout * comprehensiveMultiplier;
+    const httpTimeout = baseHttpTimeout * comprehensiveMultiplier;
+    const nucleiTimeout = baseNucleiTimeout * comprehensiveMultiplier;
+    
+    // Overall scan timeout (the maximum time the entire scan should take)
+    const overallScanTimeout = parseInt(process.env.OVERALL_SCAN_TIMEOUT || '600000') * comprehensiveMultiplier; // 10 minutes (20 for comprehensive)
+    
+    console.log(`Configured timeouts - Port scan: ${portScanTimeout/1000}s, HTTP: ${httpTimeout/1000}s, Nuclei: ${nucleiTimeout/1000}s, Overall: ${overallScanTimeout/1000}s`);
+    
+    // Create scanner with enhanced timeout settings
     const scanner = new Scanner({
-      timeout: scanTimeout,
+      timeout: httpTimeout, // General HTTP timeout
+      portScanTimeout: portScanTimeout, // Specific timeout for port scanning
+      overallTimeout: overallScanTimeout, // Maximum time for the entire scan
       ports: process.env.DEFAULT_PORTS_TO_SCAN || '21,22,25,80,443,3306,8080,8443',
       aggressive: process.env.AGGRESSIVE_SCAN === 'true',
       enableNuclei: process.env.ENABLE_NUCLEI !== 'false', // Enable by default
+      adaptiveTimeouts: process.env.ADAPTIVE_TIMEOUTS !== 'false', // Enable adaptive timeouts by default
       nucleiOptions: {
         templates: templates,
         nucleiPath: process.env.NUCLEI_PATH || 'nuclei',
         outputDir: RESULTS_DIR,
-        timeout: scanTimeout // Match the scanner timeout
+        timeout: nucleiTimeout, // Use the Nuclei-specific timeout
+        rateLimit: process.env.NUCLEI_RATE_LIMIT || '150', // Rate limiting to avoid blocks
+        concurrency: process.env.NUCLEI_CONCURRENCY || '25' // Concurrent template execution
       }
     });
     
