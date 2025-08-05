@@ -1,0 +1,83 @@
+id: netsage-waf-detection-template
+info:
+  name: NetSage WAF Detection Template
+  author: NetSage Scanner
+  severity: info
+  description: A custom template for detecting common Web Application Firewalls (WAFs)
+  reference:
+    - https://github.com/projectdiscovery/nuclei-templates/tree/main/http/waf
+  tags: waf,detection,firewall
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.well-known/security.txt"
+      - "{{BaseURL}}/wp-content/plugins/hello.php"
+      - "{{BaseURL}}/cgi-bin/test-cgi"
+      - "{{BaseURL}}/?param=<script>alert(1)</script>"
+      - "{{BaseURL}}/?param=../../etc/passwd"
+      - "{{BaseURL}}/?param=union+select+1,2,3,4,5--"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        name: cloudflare
+        words:
+          - "Cloudflare"
+          - "cloudflare-nginx"
+        part: header
+        condition: or
+
+      - type: word
+        name: akamai
+        words:
+          - "AkamaiGHost"
+          - "X-Akamai"
+        part: header
+        condition: or
+
+      - type: word
+        name: aws-waf
+        words:
+          - "aws-waf"
+          - "AWS WAF"
+          - "awselb/2.0"
+        part: all
+        condition: or
+
+      - type: word
+        name: firewall-blocked
+        words:
+          - "This request has been blocked by the security rules"
+          - "Access Denied"
+          - "Forbidden"
+          - "Your request has been blocked"
+          - "was blocked by the firewall"
+          - "security policy violations"
+          - "WAF Triggered"
+        part: body
+        condition: or
+
+      - type: regex
+        name: waf-headers
+        regex:
+          - "(?i)x-firewall"
+          - "(?i)x-waf"
+          - "(?i)x-security"
+          - "(?i)mod_security"
+        part: header
+        condition: or
+
+    extractors:
+      - type: regex
+        name: waf-vendor
+        regex:
+          - "(?i)cloudflare"
+          - "(?i)akamai"
+          - "(?i)aws.waf"
+          - "(?i)f5.big.ip"
+          - "(?i)wordfence"
+          - "(?i)sucuri"
+          - "(?i)imperva"
+          - "(?i)fortinet"
+        part: all

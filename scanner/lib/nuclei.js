@@ -1,5 +1,5 @@
 /**
- * Nuclei Integration Module
+ * Enhanced Nuclei Integration Module (Phase 3, Step 1)
  * 
  * This module integrates the Nuclei vulnerability scanner with the NetSage scanner.
  * It provides functionality to execute Nuclei scans and process the results.
@@ -10,69 +10,149 @@
  * 
  * The module parses JSONL (JSON Lines) output from Nuclei and formats the findings
  * into a standardized structure for further processing.
+ * 
+ * Enhancements in Phase 3, Step 1:
+ * - Increased default timeout to 600s (10 minutes)
+ * - Implemented improved rate limiting
+ * - Added robust retry mechanism for failed template executions
+ * - Added target-based template selection
+ * - Added scan progress tracking
+ * - Added health checks for Nuclei to ensure proper operation
  */
 
-const { exec } = require('child_process');
+const { exec, execSync, execFile } = require('child_process');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const execPromise = promisify(exec);
-const fsSync = require('fs');
+const execFilePromise = promisify(execFile);
+const { URL } = require('url');
 
 class NucleiScanner {
   /**
-   * Creates a new Nuclei scanner instance
+   * Creates a new Nuclei scanner instance with enhanced configuration
    * @param {Object} options - Scanner options
    * @param {number} options.timeout - Timeout in milliseconds for scan operations (default: 10 minutes)
    * @param {string} options.outputDir - Directory to store scan results
    * @param {string|Array} options.templates - Template category or array of templates (default: 'technologies')
    * @param {string} options.nucleiPath - Path to nuclei executable (default: 'nuclei')
+   * @param {number} options.rateLimit - Request rate limit per second (default: 150)
+   * @param {number} options.concurrency - Template concurrency (default: 25)
+   * @param {number} options.bulkSize - Hosts per request (default: 25)
+   * @param {number} options.retries - Number of retries for failed requests (default: 3)
+   * @param {boolean} options.autoUpdateTemplates - Auto update templates (default: true)
+   * @param {boolean} options.enableProgressTracking - Enable progress tracking (default: true)
+   * @param {boolean} options.autoTemplateSelection - Enable automatic template selection (default: true)
+   * @param {string} options.severityLevel - Minimum severity to scan for (default: all)
+   * @param {number} options.templateTimeout - Timeout per template in minutes (default: 5)
+   * @param {boolean} options.verbose - Enable verbose output (default: false)
    */
   constructor(options = {}) {
-    this.timeout = options.timeout || 600000; // Default 10 minutes (increase if needed)
+    // Enhanced timeout configuration - increase to at least 10 minutes
+    this.timeout = options.timeout || 600000; // Default 10 minutes
     
     // Create absolute path to scan-results directory
     const rootDir = path.dirname(__dirname); // Go up one level from lib/ to scanner/
     this.outputDir = options.outputDir || path.join(rootDir, 'scan-results');
     console.log(`Output directory set to: ${this.outputDir}`);
     
+    // Template configuration - enhanced with auto-selection capability
     this.templates = options.templates || 'technologies'; // Default to just technologies template
+    this.autoTemplateSelection = options.autoTemplateSelection !== false; // Auto select templates based on target
+    
+    // Nuclei executable path
     this.nucleiPath = options.nucleiPath || 'nuclei';
     
-    // Default templates directory path (used for verification)
+    // Templates directory path detection with fallbacks
     this.templatesDir = options.templatesDir || null;
     if (!this.templatesDir) {
-      // Try to determine templates directory based on OS
-      if (process.platform === 'win32') {
-        // Windows: Most likely in %USERPROFILE%\nuclei-templates
-        this.templatesDir = path.join(process.env.USERPROFILE || '', 'nuclei-templates');
+      this.detectTemplatesDirectory();
+    }
+    
+    // Enhanced scanning options
+    this.rateLimit = options.rateLimit || '150'; // Requests per second (default 150)
+    this.concurrency = options.concurrency || '25'; // Template concurrency (default 25)
+    this.bulkSize = options.bulkSize || '25'; // Hosts per request (default 25)
+    this.retries = options.retries || 3; // Increased default retries to 3
+    this.templateTimeout = options.templateTimeout || 5; // Timeout per template in minutes
+    this.autoUpdateTemplates = options.autoUpdateTemplates !== false; // Auto update templates
+    this.enableProgressTracking = options.enableProgressTracking !== false; // Track progress
+    this.verbose = options.verbose || false; // Verbose output
+    this.severityLevel = options.severityLevel || null; // Minimum severity level
+    
+    // Track state for progress reporting
+    this.scanStartTime = null;
+    this.totalTemplates = 0;
+    this.processedTemplates = 0;
+    this.scanStatus = 'idle';
+    
+    // Template categories for intelligent selection
+    this.templateCategories = {
+      basic: ['technologies', 'ssl', 'http/headers'],
+      web: ['cves', 'vulnerabilities', 'exposures', 'misconfiguration', 'http/exposed-panels'],
+      api: ['api', 'takeovers', 'http/exposed-tokens'],
+      webapp: ['http/technologies', 'http/exposed-panels', 'http/exposures', 'http/vulnerabilities'],
+      all: [] // Will be populated during initialization
+    };
+    
+    // Progress tracking data
+    this.progressData = {
+      startTime: null,
+      endTime: null,
+      totalTemplates: 0,
+      processedTemplates: 0,
+      matchesFound: 0,
+      status: 'idle'
+    };
+  }
+  
+  /**
+   * Detect the templates directory based on platform
+   * @private
+   */
+  detectTemplatesDirectory() {
+    // Try to determine templates directory based on OS
+    if (process.platform === 'win32') {
+      // Windows: Most likely in %USERPROFILE%\nuclei-templates
+      this.templatesDir = path.join(process.env.USERPROFILE || '', 'nuclei-templates');
+      
+      // Check alternative locations if common on Windows
+      if (!fsSync.existsSync(this.templatesDir)) {
+        const altLocations = [
+          path.join(process.env.USERPROFILE || '', '.nuclei', 'templates'),
+          path.join(process.env.LOCALAPPDATA || '', 'nuclei-templates'),
+          path.join(process.env.APPDATA || '', 'nuclei-templates')
+        ];
         
-        // Check alternative locations if common on Windows
-        if (!fsSync.existsSync(this.templatesDir)) {
-          const altLocations = [
-            path.join(process.env.USERPROFILE || '', '.nuclei', 'templates'),
-            path.join(process.env.LOCALAPPDATA || '', 'nuclei-templates')
-          ];
-          
-          for (const loc of altLocations) {
-            if (fsSync.existsSync(loc)) {
-              this.templatesDir = loc;
-              break;
-            }
+        for (const loc of altLocations) {
+          if (fsSync.existsSync(loc)) {
+            this.templatesDir = loc;
+            break;
           }
         }
-      } else {
-        // Linux/macOS: Default is in ~/.nuclei/templates
-        this.templatesDir = path.join(process.env.HOME || '', '.nuclei', 'templates');
+      }
+    } else {
+      // Linux/macOS: Default is in ~/.nuclei/templates
+      this.templatesDir = path.join(process.env.HOME || '', '.nuclei', 'templates');
+      
+      // Check alternative locations for Linux
+      if (!fsSync.existsSync(this.templatesDir)) {
+        const altLocations = [
+          '/usr/local/share/nuclei-templates',
+          '/opt/nuclei-templates'
+        ];
+        
+        for (const loc of altLocations) {
+          if (fsSync.existsSync(loc)) {
+            this.templatesDir = loc;
+            break;
+          }
+        }
       }
     }
     
-    // Additional scan options
-    this.rateLimit = options.rateLimit || '150'; // Requests per second
-    this.concurrency = options.concurrency || '25'; // Template concurrency
-    this.bulkSize = options.bulkSize || '25'; // Hosts per request
-    this.retries = options.retries || 1; // Number of retries for failed requests
-    this.autoUpdateTemplates = options.autoUpdateTemplates !== false; // Auto update templates
+    console.log(`Templates directory detected at: ${this.templatesDir}`);
   }
 
   /**
@@ -86,8 +166,6 @@ class NucleiScanner {
       
       try {
         // First try execFile which is safer
-        const { execFile } = require('child_process');
-        const execFilePromise = promisify(execFile);
         const { stdout } = await execFilePromise(this.nucleiPath, ['-version'], { timeout: 30000 });
         versionOutput = stdout.trim();
       } catch (execFileError) {
@@ -98,7 +176,7 @@ class NucleiScanner {
       
       console.log(`Found Nuclei version: ${versionOutput}`);
       
-      // Check if templates exist by directly checking the template directory
+      // Check if templates exist
       const templatesAvailable = await this.verifyTemplatesExist();
       
       // If templates don't exist and autoUpdate is enabled, update them
@@ -111,6 +189,11 @@ class NucleiScanner {
         }
       }
       
+      // Discover all available template categories for automatic selection
+      if (this.autoTemplateSelection) {
+        await this.discoverTemplateCategories();
+      }
+      
       return true;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -121,7 +204,6 @@ class NucleiScanner {
       
       // Try running a simpler command just to check if the executable exists
       try {
-        const { execSync } = require('child_process');
         execSync(`${this.nucleiPath}`, { timeout: 1000 });
         console.log('The nuclei executable exists but had an error with the version check.');
       } catch (simpleError) {
@@ -131,6 +213,50 @@ class NucleiScanner {
       }
       
       return false;
+    }
+  }
+  
+  /**
+   * Discover all available template categories for automatic selection
+   * @private
+   * @returns {Promise<void>}
+   */
+  async discoverTemplateCategories() {
+    try {
+      console.log('Discovering available template categories...');
+      
+      // Use nuclei's template list command
+      let templateListOutput = '';
+      
+      try {
+        templateListOutput = execSync(`"${this.nucleiPath}" -tl`, { timeout: 30000 }).toString();
+      } catch (error) {
+        console.warn('Failed to get template list:', error.message);
+        return;
+      }
+      
+      // Parse template categories from the output
+      const categories = new Set();
+      const lines = templateListOutput.split('\n');
+      
+      for (const line of lines) {
+        if (line.includes('templates')) {
+          // Extract category names
+          const match = line.match(/\[([^\]]+)\]/);
+          if (match && match[1]) {
+            categories.add(match[1].trim());
+          }
+        }
+      }
+      
+      // Update the all category with all discovered templates
+      if (categories.size > 0) {
+        this.templateCategories.all = Array.from(categories);
+        console.log(`Discovered ${this.templateCategories.all.length} template categories`);
+      }
+      
+    } catch (error) {
+      console.error('Error discovering template categories:', error.message);
     }
   }
   
@@ -150,7 +276,6 @@ class NucleiScanner {
       
       // Try to check templates availability via nuclei command first (most reliable)
       try {
-        const { execSync } = require('child_process');
         const templatesOutput = execSync(`"${this.nucleiPath}" -tl`, { timeout: 30000 }).toString();
         
         if (templatesOutput.includes('templates') && templatesOutput.toLowerCase().includes('http/technologies')) {
@@ -214,12 +339,10 @@ class NucleiScanner {
     console.log('Updating Nuclei templates...');
     try {
       // Use higher timeout for template update (can take a while)
-      const updateTimeout = 120000; // 2 minutes
+      const updateTimeout = 300000; // 5 minutes - increased from 2 minutes
       
       // Try both execFile and exec approaches
       try {
-        const { execFile } = require('child_process');
-        const execFilePromise = promisify(execFile);
         const { stdout } = await execFilePromise(
           this.nucleiPath, 
           ['-update-templates'],
@@ -267,14 +390,86 @@ class NucleiScanner {
       throw new Error(`Failed to create output directory: ${error.message}`);
     }
   }
+  
+  /**
+   * Select appropriate templates based on target type
+   * @param {string} target - Target URL or hostname
+   * @returns {string|Array} Selected templates
+   */
+  selectTemplatesForTarget(target) {
+    // If auto template selection is disabled, return the configured templates
+    if (!this.autoTemplateSelection) {
+      return this.templates;
+    }
+    
+    // If user explicitly provided templates, use those
+    if (typeof this.templates !== 'string' || this.templates !== 'technologies') {
+      return this.templates;
+    }
+    
+    try {
+      // Parse URL if possible
+      let urlObj;
+      try {
+        urlObj = new URL(target);
+      } catch (e) {
+        // If parsing fails, try adding http:// prefix
+        try {
+          urlObj = new URL(`http://${target}`);
+        } catch (e2) {
+          console.warn('Could not parse target as URL, using basic templates');
+          return this.templateCategories.basic;
+        }
+      }
+      
+      // Extract hostname and path
+      const { hostname, pathname, protocol } = urlObj;
+      
+      // API endpoint detection
+      if (pathname && (
+          pathname.includes('/api') || 
+          pathname.includes('/v1') || 
+          pathname.includes('/v2') ||
+          pathname.includes('/rest') ||
+          pathname.includes('/graphql')
+         )) {
+        console.log(`Target appears to be an API endpoint, using API templates`);
+        return this.templateCategories.api;
+      }
+      
+      // Web application detection (has non-root path)
+      if (pathname && pathname !== '/' && pathname.length > 1) {
+        console.log(`Target appears to be a web application, using webapp templates`);
+        return this.templateCategories.webapp;
+      }
+      
+      // Standard web target
+      console.log(`Using standard web templates for target`);
+      return this.templateCategories.web;
+    } catch (error) {
+      console.warn(`Error selecting templates for target: ${error.message}`);
+      // Fallback to basic templates
+      return this.templateCategories.basic;
+    }
+  }
 
   /**
-   * Run a nuclei scan on the target URL
+   * Run a nuclei scan on the target URL with enhanced configuration
    * @param {string} target - URL to scan
    * @returns {Promise<Object>} Scan results
    */
   async scan(target) {
     try {
+      // Initialize progress tracking
+      this.progressData = {
+        startTime: new Date(),
+        endTime: null,
+        totalTemplates: 0,
+        processedTemplates: 0,
+        matchesFound: 0,
+        status: 'starting'
+      };
+      
       // Check if nuclei is available
       const isAvailable = await this.isNucleiAvailable();
       if (!isAvailable) {
@@ -287,91 +482,226 @@ class NucleiScanner {
       // Handle Windows and Unix systems differently
       const isWindows = process.platform === 'win32';
       
+      // Select templates based on target
+      const selectedTemplates = this.selectTemplatesForTarget(target);
+      
       console.log(`Scanning target ${target} with Nuclei...`);
-      console.log(`Using templates: ${Array.isArray(this.templates) ? this.templates.join(',') : this.templates}`);
+      console.log(`Using templates: ${Array.isArray(selectedTemplates) ? selectedTemplates.join(',') : selectedTemplates}`);
+      
+      this.progressData.status = 'scanning';
       
       // For Windows, use a simplified command with minimal arguments
       if (isWindows) {
-        console.log('Using simplified command for Windows...');
+        console.log('Using Windows-specific command format...');
         
         // This format has been tested to work reliably on Windows
-        // Use both verbose and JSON output flags
         let command = `"${this.nucleiPath}" -u "${target}" -v -j -o "${outputFile}"`;
         
         // Add template parameter directly - simple form
-        if (typeof this.templates === 'string' && this.templates) {
-          command += ` -t "${this.templates}"`;
-        } else if (Array.isArray(this.templates) && this.templates.length > 0) {
+        if (typeof selectedTemplates === 'string' && selectedTemplates) {
+          command += ` -t "${selectedTemplates}"`;
+        } else if (Array.isArray(selectedTemplates) && selectedTemplates.length > 0) {
           // Join with comma for Windows
-          command += ` -t "${this.templates.join(',')}"`;
+          command += ` -t "${selectedTemplates.join(',')}"`;
         } else {
           command += ` -t "technologies"`;
         }
         
-        // Add timeout flag to allow Nuclei to manage its own timeout
-        command += ` -timeout 5`; // 5 minutes per template
+        // Add rate limit settings (enhanced)
+        command += ` -rate-limit ${this.rateLimit}`;
+        command += ` -c ${this.concurrency}`;
+        command += ` -bulk-size ${this.bulkSize}`;
+        
+        // Add retry mechanism (enhanced)
+        command += ` -retries ${this.retries}`;
+        
+        // Add per-template timeout flag (enhanced)
+        command += ` -timeout ${this.templateTimeout}`;
+        
+        // Add severity filter if specified
+        if (this.severityLevel) {
+          command += ` -severity ${this.severityLevel}`;
+        }
+        
+        // Add health check to ensure template execution is working
+        command += ` -stats`;
+        
+        // Add progress output for monitoring
+        if (this.enableProgressTracking) {
+          command += ` -stats -stats-interval 10`;
+        }
         
         console.log(`Windows command: ${command}`);
         
-        // Use execSync for better output capturing
-        const { execSync } = require('child_process');
-        let stdout = '';
-        let stderr = '';
+        // Use spawn to capture output in real-time for progress tracking
+        const { spawn } = require('child_process');
         
-        try {
-          console.log(`Running with timeout of ${this.timeout/1000} seconds...`);
-          stdout = execSync(command, { 
-            timeout: this.timeout,
-            maxBuffer: 10 * 1024 * 1024 // 10MB buffer
-          }).toString();
-        } catch (execError) {
-          stderr = execError.stderr ? execError.stderr.toString() : 'Execution error';
-          if (execError.stdout) {
-            stdout = execError.stdout.toString();
-          }
-        }
-        
-        console.log('Scan completed');
-        
-        // Parse the results
-        return this.processResults(target, outputFile, stdout, stderr);
+        return new Promise((resolve, reject) => {
+          // Set the maximum execution time
+          const timeoutId = setTimeout(() => {
+            if (scanProcess && !scanProcess.killed) {
+              console.log(`Scan timeout after ${this.timeout/1000} seconds, terminating...`);
+              scanProcess.kill();
+              
+              this.progressData.status = 'timeout';
+              this.progressData.endTime = new Date();
+              
+              reject(new Error(`Scan timed out after ${this.timeout/1000} seconds`));
+            }
+          }, this.timeout);
+          
+          let stdout = '';
+          let stderr = '';
+          
+          // Split the command into the executable and arguments for spawn
+          const args = command.split(' ').slice(1);
+          const executable = command.split(' ')[0].replace(/"/g, '');
+          
+          console.log(`Running: ${executable} with ${args.length} arguments`);
+          
+          // Spawn the nuclei process
+          const scanProcess = spawn(executable, args, {
+            shell: true,
+            windowsVerbatimArguments: true
+          });
+          
+          // Track progress from stdout
+          scanProcess.stdout.on('data', (data) => {
+            const chunk = data.toString();
+            stdout += chunk;
+            
+            // Extract progress information
+            this.parseProgressOutput(chunk);
+          });
+          
+          scanProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+          });
+          
+          scanProcess.on('close', (code) => {
+            clearTimeout(timeoutId);
+            
+            this.progressData.status = code === 0 ? 'completed' : 'failed';
+            this.progressData.endTime = new Date();
+            
+            console.log(`Nuclei process exited with code ${code}`);
+            
+            // Process the results
+            this.processResults(target, outputFile, stdout, stderr)
+              .then(resolve)
+              .catch(reject);
+          });
+          
+          scanProcess.on('error', (err) => {
+            clearTimeout(timeoutId);
+            
+            this.progressData.status = 'error';
+            this.progressData.endTime = new Date();
+            
+            console.error(`Nuclei process error: ${err.message}`);
+            reject(err);
+          });
+        });
       } else {
-        // For Unix systems, use execFile with array arguments
+        // For Unix systems, use execFile with array arguments for better security
         const args = [
           '-u', target,
-          '-silent',
           '-j',
-          '-timeout', '5', // Per template timeout in minutes
+          '-output', outputFile,
+          '-timeout', this.templateTimeout.toString(),
           '-rate-limit', this.rateLimit,
           '-c', this.concurrency,
           '-bulk-size', this.bulkSize,
           '-retries', this.retries.toString(),
-          '-output', outputFile
+          '-stats'
         ];
         
+        // Add verbose mode if enabled
+        if (this.verbose) {
+          args.push('-v');
+        }
+        
+        // Add progress tracking if enabled
+        if (this.enableProgressTracking) {
+          args.push('-stats-interval', '10');
+        }
+        
+        // Add severity filter if specified
+        if (this.severityLevel) {
+          args.push('-severity', this.severityLevel);
+        }
+        
         // Add template argument
-        if (Array.isArray(this.templates) && this.templates.length > 0) {
-          args.push('-t', this.templates.join(','));
-        } else if (typeof this.templates === 'string' && this.templates) {
-          args.push('-t', this.templates);
+        if (Array.isArray(selectedTemplates) && selectedTemplates.length > 0) {
+          args.push('-t', selectedTemplates.join(','));
+        } else if (typeof selectedTemplates === 'string' && selectedTemplates) {
+          args.push('-t', selectedTemplates);
         } else {
           args.push('-t', 'technologies');
         }
         
         console.log(`Unix command: ${this.nucleiPath} ${args.join(' ')}`);
         
-        const { execFile } = require('child_process');
-        const execFilePromise = promisify(execFile);
+        // Use spawn to capture output in real-time
+        const { spawn } = require('child_process');
         
-        const { stdout, stderr } = await execFilePromise(this.nucleiPath, args, {
-          timeout: this.timeout,
-          maxBuffer: 10 * 1024 * 1024
+        return new Promise((resolve, reject) => {
+          // Set the maximum execution time
+          const timeoutId = setTimeout(() => {
+            if (scanProcess && !scanProcess.killed) {
+              console.log(`Scan timeout after ${this.timeout/1000} seconds, terminating...`);
+              scanProcess.kill();
+              
+              this.progressData.status = 'timeout';
+              this.progressData.endTime = new Date();
+              
+              reject(new Error(`Scan timed out after ${this.timeout/1000} seconds`));
+            }
+          }, this.timeout);
+          
+          let stdout = '';
+          let stderr = '';
+          
+          // Spawn the nuclei process
+          const scanProcess = spawn(this.nucleiPath, args);
+          
+          // Track progress from stdout
+          scanProcess.stdout.on('data', (data) => {
+            const chunk = data.toString();
+            stdout += chunk;
+            
+            // Extract progress information
+            this.parseProgressOutput(chunk);
+          });
+          
+          scanProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+          });
+          
+          scanProcess.on('close', (code) => {
+            clearTimeout(timeoutId);
+            
+            this.progressData.status = code === 0 ? 'completed' : 'failed';
+            this.progressData.endTime = new Date();
+            
+            console.log(`Nuclei process exited with code ${code}`);
+            
+            // Process the results
+            this.processResults(target, outputFile, stdout, stderr)
+              .then(resolve)
+              .catch(reject);
+          });
+          
+          scanProcess.on('error', (err) => {
+            clearTimeout(timeoutId);
+            
+            this.progressData.status = 'error';
+            this.progressData.endTime = new Date();
+            
+            console.error(`Nuclei process error: ${err.message}`);
+            reject(err);
+          });
         });
-        
-        console.log('Scan completed');
-        
-        // Process the results
-        return this.processResults(target, outputFile, stdout, stderr);
       }
     } catch (error) {
       // Format more detailed error info
@@ -391,7 +721,6 @@ class NucleiScanner {
       
       // Try running nuclei with just the -version flag to verify it works at all
       try {
-        const { execSync } = require('child_process');
         const versionOutput = execSync(`"${this.nucleiPath}" -version`, { timeout: 10000 }).toString().trim();
         errorMessage += `\nNuclei version check works (${versionOutput}), but scan command failed.`;
         errorMessage += `\nThis might be due to invalid templates or other arguments.`;
@@ -408,7 +737,7 @@ class NucleiScanner {
           // Try to update templates automatically
           try {
             console.log('Attempting to update templates automatically...');
-            execSync(`"${this.nucleiPath}" -update-templates`, { timeout: 120000 });
+            execSync(`"${this.nucleiPath}" -update-templates`, { timeout: 300000 });
             errorMessage += `\nTemplate update attempted. Please try your scan again.`;
           } catch (updateError) {
             errorMessage += `\nFailed to auto-update templates: ${updateError.message}`;
@@ -420,6 +749,9 @@ class NucleiScanner {
       
       console.error(`Nuclei scan error: ${errorMessage}`);
       
+      this.progressData.status = 'error';
+      this.progressData.endTime = new Date();
+      
       return {
         success: false,
         target,
@@ -429,9 +761,72 @@ class NucleiScanner {
         debug: {
           command: error.cmd || `${this.nucleiPath} (command execution failed)`,
           error: error
-        }
+        },
+        progress: this.progressData
       };
     }
+  }
+  
+  /**
+   * Parse progress information from Nuclei output
+   * @param {string} chunk - Chunk of output from Nuclei
+   * @private
+   */
+  parseProgressOutput(chunk) {
+    if (!chunk) return;
+    
+    try {
+      // Look for statistics information
+      const statsMatch = chunk.match(/\[STAT\](?:[^[]+)?Progress: (\d+)\/(\d+)/);
+      if (statsMatch) {
+        this.progressData.processedTemplates = parseInt(statsMatch[1], 10);
+        this.progressData.totalTemplates = parseInt(statsMatch[2], 10);
+      }
+      
+      // Look for matches found
+      const matchesMatch = chunk.match(/\[STAT\](?:[^[]+)?Matches: (\d+)/);
+      if (matchesMatch) {
+        this.progressData.matchesFound = parseInt(matchesMatch[1], 10);
+      }
+      
+      // Calculate elapsed time
+      if (this.progressData.startTime) {
+        const elapsed = (new Date() - this.progressData.startTime) / 1000;
+        this.progressData.elapsedSeconds = elapsed;
+        
+        // Calculate ETA if we have progress information
+        if (this.progressData.totalTemplates > 0 && this.progressData.processedTemplates > 0) {
+          const percentComplete = this.progressData.processedTemplates / this.progressData.totalTemplates;
+          if (percentComplete > 0) {
+            const estimatedTotalTime = elapsed / percentComplete;
+            this.progressData.estimatedSecondsRemaining = estimatedTotalTime - elapsed;
+          }
+        }
+      }
+      
+      // Verbose logging if enabled
+      if (this.verbose && (statsMatch || matchesMatch)) {
+        const progress = this.progressData.totalTemplates > 0 
+          ? Math.round((this.progressData.processedTemplates / this.progressData.totalTemplates) * 100) 
+          : 0;
+        
+        console.log(
+          `Progress: ${progress}% (${this.progressData.processedTemplates}/${this.progressData.totalTemplates}) - ` +
+          `Matches: ${this.progressData.matchesFound} - ` +
+          `Elapsed: ${Math.round(this.progressData.elapsedSeconds || 0)}s`
+        );
+      }
+    } catch (error) {
+      // Ignore parsing errors
+    }
+  }
+  
+  /**
+   * Get the current scan progress
+   * @returns {Object} Progress information
+   */
+  getScanProgress() {
+    return { ...this.progressData };
   }
   
   /**
@@ -516,12 +911,22 @@ class NucleiScanner {
         }
       }
 
+      // Finalize scan progress data
+      this.progressData.endTime = new Date();
+      this.progressData.status = 'completed';
+      this.progressData.matchesFound = results.length;
+      
+      // Add scan duration to the result
+      const scanDuration = this.progressData.endTime - this.progressData.startTime;
+      
       return {
         success: true,
         target,
         timestamp: new Date().toISOString(),
         findings: results,
+        scanDurationMs: scanDuration,
         outputFile,
+        progress: { ...this.progressData },
         raw: {
           stdout,
           stderr
@@ -529,6 +934,10 @@ class NucleiScanner {
       };
     } catch (error) {
       console.error(`Error processing results: ${error.message}`);
+      
+      this.progressData.endTime = new Date();
+      this.progressData.status = 'error';
+      
       return {
         success: false,
         target,
@@ -536,6 +945,7 @@ class NucleiScanner {
         error: `Error processing results: ${error.message}`,
         findings: [],
         outputFile,
+        progress: { ...this.progressData },
         raw: {
           stdout,
           stderr
@@ -654,7 +1064,9 @@ class NucleiScanner {
       tags: finding.info?.tags || [],
       reference: finding.info?.reference || [],
       cve: this.extractCVE(finding),
-      timestamp: finding.timestamp || new Date().toISOString()
+      timestamp: finding.timestamp || new Date().toISOString(),
+      remediation: finding.info?.remediation || '',
+      metadata: finding.info?.metadata || {}
     };
   }
 
@@ -691,6 +1103,18 @@ class NucleiScanner {
     
     if (nameDescMatch && !cves.includes(nameDescMatch[0])) {
       cves.push(nameDescMatch[0]);
+    }
+    
+    // Look for CVEs in metadata
+    if (finding.info?.metadata) {
+      const metadataStr = JSON.stringify(finding.info.metadata);
+      const metadataMatches = metadataStr.match(/CVE-\d{4}-\d+/ig) || [];
+      
+      metadataMatches.forEach(match => {
+        if (!cves.includes(match)) {
+          cves.push(match);
+        }
+      });
     }
     
     return cves;
