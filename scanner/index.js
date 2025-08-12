@@ -74,7 +74,8 @@ function formatResultsForBackend(requestId, scanResults) {
       scan_techniques: {
         port_scan: scanResults.ports !== undefined,
         http_analysis: scanResults.http !== undefined,
-        vulnerability_scan: scanResults.nuclei && scanResults.nuclei.enabled !== false
+        vulnerability_scan: scanResults.nuclei && scanResults.nuclei.enabled !== false,
+        alternative_detection: scanResults.alternative_detection !== undefined
       },
       // Add scan status information if available
       scan_status: scanResults.scan_status || {
@@ -83,7 +84,13 @@ function formatResultsForBackend(requestId, scanResults) {
         vulnerability_scan: { 
           success: scanResults.nuclei && scanResults.nuclei.findings !== undefined,
           results_found: scanResults.nuclei && scanResults.nuclei.findings && scanResults.nuclei.findings.length > 0
-        }
+        },
+        alternative_detection: scanResults.alternative_detection ? {
+          success: scanResults.alternative_detection.success,
+          results_found: scanResults.alternative_detection.technologies_detected && 
+                         scanResults.alternative_detection.technologies_detected.length > 0,
+          methods_applied: scanResults.alternative_detection.methods_applied || []
+        } : undefined
       }
     },
     // Include errors section
@@ -246,6 +253,53 @@ function formatResultsForBackend(requestId, scanResults) {
       formattedResults.vulnerability_summary.by_severity[sev] = 0;
     });
   }
+  
+  // Add alternative detection information if available
+  if (scanResults.alternative_detection && scanResults.alternative_detection.performed) {
+    console.log('Adding alternative detection results');
+    formattedResults.alternative_detection = {
+      success: scanResults.alternative_detection.success,
+      methods_applied: scanResults.alternative_detection.methods_applied || [],
+      technologies_detected: scanResults.alternative_detection.technologies_detected || []
+    };
+    
+    // Add detected technologies if any
+    if (scanResults.alternative_detection.technologies_detected && 
+        scanResults.alternative_detection.technologies_detected.length > 0) {
+      
+      // Create a technologies section if it doesn't already exist
+      if (!formattedResults.technologies) {
+        formattedResults.technologies = [];
+      }
+      
+      // Add each technology detected through alternative methods
+      scanResults.alternative_detection.technologies_detected.forEach(tech => {
+        // Only add if not already present
+        const techName = tech.name.toLowerCase();
+        if (!formattedResults.technologies.some(t => t.name.toLowerCase() === techName)) {
+          formattedResults.technologies.push({
+            name: tech.name,
+            version: tech.version || '',
+            category: tech.category || tech.type || 'unknown',
+            detection_method: 'alternative',
+            confidence: tech.confidence || 'medium'
+          });
+        }
+      });
+    }
+    
+    // Add SSL/TLS information if available
+    if (scanResults.alternative_detection.tls_info) {
+      formattedResults.ssl_info = scanResults.alternative_detection.tls_info;
+    }
+    
+    // Add security products if detected
+    if (scanResults.alternative_detection.security_products && 
+        scanResults.alternative_detection.security_products.length > 0) {
+      
+      formattedResults.security_products = scanResults.alternative_detection.security_products;
+    }
+  }
 
   return formattedResults;
 }
@@ -372,7 +426,23 @@ async function runScan(target, requestId) {
     
     console.log(`Configured timeouts - Port scan: ${portScanTimeout/1000}s, HTTP: ${httpTimeout/1000}s, Nuclei: ${nucleiTimeout/1000}s, Overall: ${overallScanTimeout/1000}s`);
     
-    // Create scanner with enhanced timeout settings
+    // Phase 4, Step 1: Configure evasion options
+    const enableEvasion = process.env.ENABLE_EVASION !== 'false'; // Enable evasion by default
+    const evasionProfile = process.env.EVASION_PROFILE || 'moderate'; // Default to moderate
+    
+    // Configure individual evasion techniques
+    const evasionOptions = {
+      enableFragmentation: process.env.ENABLE_FRAGMENTATION !== 'false', // IP fragmentation
+      enableDecoys: process.env.ENABLE_DECOYS !== 'false', // Decoy scan
+      enableSourcePort: process.env.ENABLE_SOURCE_PORT !== 'false', // Source port manipulation
+      enableRandomization: process.env.ENABLE_RANDOMIZATION !== 'false' // Randomized scan order
+    };
+    
+    if (enableEvasion) {
+      console.log(`Evasion techniques enabled with profile: ${evasionProfile}`);
+    }
+    
+    // Create scanner with enhanced timeout, evasion settings, and alternative detection
     const scanner = new Scanner({
       timeout: httpTimeout, // General HTTP timeout
       portScanTimeout: portScanTimeout, // Specific timeout for port scanning
@@ -381,6 +451,40 @@ async function runScan(target, requestId) {
       aggressive: process.env.AGGRESSIVE_SCAN === 'true',
       enableNuclei: process.env.ENABLE_NUCLEI !== 'false', // Enable by default
       adaptiveTimeouts: process.env.ADAPTIVE_TIMEOUTS !== 'false', // Enable adaptive timeouts by default
+      // Phase 4, Step 1: Add evasion options
+      enableEvasion: enableEvasion,
+      evasionProfile: evasionProfile,
+      evasionOptions: evasionOptions,
+      // Phase 4, Step 2: Add alternative detection options
+      enableAlternativeDetection: process.env.ENABLE_ALTERNATIVE_DETECTION === 'true',
+      alternativeDetectionOptions: {
+        enableSSL: process.env.ALTERNATIVE_DETECTION_SSL !== 'false',
+        enableHTTP: process.env.ALTERNATIVE_DETECTION_HTTP !== 'false',
+        enableJS: process.env.ALTERNATIVE_DETECTION_JS !== 'false',
+        timeout: parseInt(process.env.ALTERNATIVE_DETECTION_TIMEOUT || '15000')
+      },
+      // Phase 4, Step 3: Add proxy support options
+      enableProxySupport: process.env.ENABLE_PROXY_SUPPORT === 'true',
+      proxyOptions: {
+        proxyList: (() => {
+          try {
+            return JSON.parse(process.env.PROXY_LIST || '[]');
+          } catch (error) {
+            console.warn('Failed to parse PROXY_LIST environment variable, using empty array');
+            return [];
+          }
+        })(),
+        enableTor: process.env.ENABLE_TOR === 'true',
+        rotateUserAgents: process.env.ROTATE_USER_AGENTS !== 'false',
+        enableConnectionPooling: process.env.ENABLE_CONNECTION_POOLING !== 'false',
+        maxPoolSize: parseInt(process.env.MAX_POOL_SIZE || '10'),
+        poolTimeout: parseInt(process.env.POOL_TIMEOUT || '30000'),
+        torProxy: {
+          protocol: process.env.TOR_PROXY_PROTOCOL || 'socks5',
+          host: process.env.TOR_PROXY_HOST || '127.0.0.1',
+          port: parseInt(process.env.TOR_PROXY_PORT || '9050')
+        }
+      },
       nucleiOptions: {
         templates: templates,
         nucleiPath: process.env.NUCLEI_PATH || 'nuclei',
@@ -411,6 +515,41 @@ async function runScan(target, requestId) {
     results.scanDurationMs = duration;
     
     console.log(`Scan completed in ${(duration / 1000).toFixed(2)} seconds`);
+    
+    // FIXED: Check if we need to wait for and merge Nuclei results
+    if (results.nuclei && results.nuclei.outputFile) {
+      try {
+        // Wait a bit to make sure any ongoing file operations complete
+        console.log('Ensuring all Nuclei results are properly captured...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Try to read the output file directly
+        const outputFile = results.nuclei.outputFile;
+        if (fs.existsSync(outputFile)) {
+          const jsonContent = fs.readFileSync(outputFile, 'utf8');
+          if (jsonContent && jsonContent.trim().length > 0) {
+            try {
+              const findings = JSON.parse(jsonContent);
+              if (Array.isArray(findings) && findings.length > 0) {
+                console.log(`Merging ${findings.length} Nuclei findings from file ${outputFile}`);
+                results.nuclei.findings = findings;
+                
+                // Update scan status
+                if (!results.scan_status.vulnerability_scan) {
+                  results.scan_status.vulnerability_scan = {};
+                }
+                results.scan_status.vulnerability_scan.success = true;
+                results.scan_status.vulnerability_scan.results_found = findings.length > 0;
+              }
+            } catch (parseError) {
+              console.error(`Error parsing Nuclei results: ${parseError.message}`);
+            }
+          }
+        }
+      } catch (readError) {
+        console.error(`Error reading Nuclei results file: ${readError.message}`);
+      }
+    }
     
     // Format results for the backend
     const formattedResults = formatResultsForBackend(requestId, results);

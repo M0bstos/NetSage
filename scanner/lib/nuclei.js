@@ -479,6 +479,9 @@ class NucleiScanner {
       // Prepare output file
       const outputFile = await this.prepareOutputDirectory();
       
+      // Store the output file path for later reference
+      this.currentOutputFile = outputFile;
+      
       // Handle Windows and Unix systems differently
       const isWindows = process.platform === 'win32';
       
@@ -703,9 +706,16 @@ class NucleiScanner {
           });
         });
       }
-    } catch (error) {
+      } catch (error) {
       // Format more detailed error info
       let errorMessage = error.message;
+      
+      // FIXED: Return the output file path even on error so we can check it later
+      const result = {
+        success: false,
+        error: errorMessage,
+        outputFile: this.currentOutputFile
+      };
       
       // Check for specific error types
       if (error.code === 'ENOENT') {
@@ -719,7 +729,8 @@ class NucleiScanner {
         errorMessage += `\nError output: ${error.stderr}`;
       }
       
-      // Try running nuclei with just the -version flag to verify it works at all
+      result.error = errorMessage;
+      return result;      // Try running nuclei with just the -version flag to verify it works at all
       try {
         const versionOutput = execSync(`"${this.nucleiPath}" -version`, { timeout: 10000 }).toString().trim();
         errorMessage += `\nNuclei version check works (${versionOutput}), but scan command failed.`;
@@ -892,6 +903,17 @@ class NucleiScanner {
       } catch (writeError) {
         console.error(`Error saving results to file: ${writeError.message}`);
       }
+      
+      // FIXED: Always return the outputFile path so we can check it again later if needed
+      return {
+        success: true,
+        findings: results,
+        outputFile: outputFile,
+        count: results.length,
+        target: target,
+        timestamp: new Date().toISOString(),
+        progress: { ...this.progressData }
+      };
       
       // Process any findings from stdout if we have matches
       if (stdout && results.length === 0) {

@@ -57,9 +57,6 @@ credentials.json
 secrets.json
 
 # Project specific files
-docs/git-commands.ps1
-docs/github-setup-guide.md
-docs/backend-dev-guide.md
-docs/Plan.md
-docs/index.md
+docs/
+
 # Other documentation files should be tracked in git

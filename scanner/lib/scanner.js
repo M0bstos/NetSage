@@ -15,6 +15,9 @@ const NucleiScanner = require('./nuclei');
 const PortDetection = require('./portDetection');
 const OutputFormatter = require('./utils/outputFormatter');
 const ErrorHandler = require('./utils/errorHandler');
+const EvasionTechniques = require('./utils/evasionTechniques');
+const AlternativeDetection = require('./utils/alternativeDetection');
+const ProxySupport = require('./utils/proxySupport');
 
 // Configure nmap path if necessary
 // nmap.nmapLocation = 'path/to/nmap'; // Uncomment and set if nmap is not in PATH
@@ -61,6 +64,26 @@ class Scanner {
     this.enablePortDetection = options.enablePortDetection !== false; // Enable port detection by default
     this.enableBannerGrabbing = options.enableBannerGrabbing !== false; // Enable banner grabbing by default
     
+    // Phase 4, Step 1: Evasion technique options
+    const evasionOptions = options.evasionOptions || {};
+    this.enableEvasion = options.enableEvasion !== false; // Enable evasion by default
+    this.evasionProfile = options.evasionProfile || 'moderate'; // Default to moderate evasion
+    
+    // Phase 4, Step 2: Alternative detection options
+    const alternativeOptions = options.alternativeOptions || {};
+    this.enableAlternativeDetection = options.enableAlternativeDetection !== false; // Enable alternative detection by default
+    this.enableSSLAnalysis = alternativeOptions.enableSSLAnalysis !== false; // Enable SSL analysis by default
+    this.enableHTTPFingerprinting = alternativeOptions.enableHTTPFingerprinting !== false; // Enable HTTP fingerprinting by default
+    this.enableJSDetection = alternativeOptions.enableJSDetection !== false; // Enable JS/CSS detection by default
+    
+    // Phase 4, Step 3: Proxy support options
+    const proxyOptions = options.proxyOptions || {};
+    this.enableProxySupport = options.enableProxySupport !== false; // Enable proxy support by default
+    this.proxyList = proxyOptions.proxyList || []; // List of proxy configurations
+    this.enableTor = proxyOptions.enableTor !== false; // Enable TOR support by default
+    this.rotateUserAgents = proxyOptions.rotateUserAgents !== false; // Enable user agent rotation by default
+    this.enableConnectionPooling = proxyOptions.enableConnectionPooling !== false; // Enable connection pooling by default
+    
     // Initialize helper modules
     this.portDetection = new PortDetection({
       timeout: this.timeout,
@@ -69,6 +92,36 @@ class Scanner {
     
     this.outputFormatter = new OutputFormatter();
     this.errorHandler = new ErrorHandler();
+    
+    // Initialize evasion techniques module
+    this.evasionTechniques = new EvasionTechniques({
+      enableFragmentation: evasionOptions.enableFragmentation !== false,
+      enableDecoys: evasionOptions.enableDecoys !== false,
+      enableSourcePort: evasionOptions.enableSourcePort !== false,
+      enableRandomization: evasionOptions.enableRandomization !== false
+    });
+    
+    // Initialize proxy support module first
+    this.proxySupport = new ProxySupport({
+      proxyList: this.proxyList,
+      enableTor: this.enableTor,
+      rotateUserAgents: this.rotateUserAgents,
+      enableConnectionPooling: this.enableConnectionPooling,
+      maxPoolSize: proxyOptions.maxPoolSize || 10,
+      poolTimeout: proxyOptions.poolTimeout || 30000,
+      torProxy: proxyOptions.torProxy
+    });
+    
+    // Initialize alternative detection module
+    this.alternativeDetection = new AlternativeDetection({
+      timeout: this.timeout,
+      enableSSL: this.enableSSLAnalysis,
+      enableHTTP: this.enableHTTPFingerprinting,
+      enableJS: this.enableJSDetection,
+      userAgent: options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/107.0.0.0 Safari/537.36',
+      // Pass proxy-enabled request function if available
+      customRequestFunction: this.enableProxySupport ? this.proxySupport.makeProxiedRequest.bind(this.proxySupport) : null
+    });
     
     // Initialize Nuclei scanner if enabled
     if (this.enableNuclei) {
@@ -81,6 +134,18 @@ class Scanner {
     }
     
     console.log(`Scanner initialized with timeouts - General: ${this.timeout}ms, Port scan: ${this.portScanTimeout}ms, Overall: ${this.overallTimeout}ms, Adaptive: ${this.adaptiveTimeouts}`);
+    
+    if (this.enableEvasion) {
+      console.log(`Evasion techniques enabled with profile: ${this.evasionProfile}`);
+    }
+    
+    if (this.enableAlternativeDetection) {
+      console.log(`Alternative detection methods enabled: SSL=${this.enableSSLAnalysis}, HTTP=${this.enableHTTPFingerprinting}, JS/CSS=${this.enableJSDetection}`);
+    }
+    
+    if (this.enableProxySupport) {
+      console.log(`Proxy support enabled: Proxies=${this.proxyList.length}, TOR=${this.enableTor}, User-Agent Rotation=${this.rotateUserAgents}, Connection Pooling=${this.enableConnectionPooling}`);
+    }
   }
   
   /**
@@ -145,13 +210,22 @@ class Scanner {
       const startTime = Date.now();
       
       try {
-        // Try a simple HTTP request with a short timeout
-        await axios.get(`http://${hostname}`, {
-          timeout: 3000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/96.0.4664.110 Safari/537.36'
-          }
-        });
+        // Try a simple HTTP request with a short timeout using proxy support if enabled
+        let response;
+        if (this.enableProxySupport) {
+          response = await this.proxySupport.makeProxiedRequest(`http://${hostname}`, {
+            maxRetries: 1,
+            retryDelay: 500,
+            fallbackToNoProxy: true
+          });
+        } else {
+          response = await axios.get(`http://${hostname}`, {
+            timeout: 3000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/96.0.4664.110 Safari/537.36'
+            }
+          });
+        }
         
         // Calculate response time
         const responseTime = Date.now() - startTime;
@@ -434,13 +508,41 @@ class Scanner {
           
           console.log(`Running Nuclei scan on ${nucleiUrl} with timeout: ${nucleiTimeout}ms`);
           
+          // FIXED: Make sure to await the complete Nuclei scan process
           const nucleiResults = await this.nucleiScanner.scan(nucleiUrl);
+          
+          // Check if we need to wait for findings to be saved to the output file
+          if (nucleiResults.outputFile && !nucleiResults.findings) {
+            console.log('Waiting for Nuclei findings to be processed from output file...');
+            
+            // Wait for a short time to ensure file processing completes
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            try {
+              // Read the output file directly to get the findings
+              const outputFile = nucleiResults.outputFile;
+              if (fsSync.existsSync(outputFile)) {
+                const jsonContent = await fs.promises.readFile(outputFile, 'utf8');
+                const findings = JSON.parse(jsonContent);
+                
+                if (Array.isArray(findings) && findings.length > 0) {
+                  console.log(`Found ${findings.length} vulnerability findings in output file`);
+                  nucleiResults.findings = findings;
+                  nucleiResults.success = true;
+                }
+              }
+            } catch (fileError) {
+              console.error(`Error reading Nuclei findings from file: ${fileError.message}`);
+            }
+          }
+          
           result.nuclei = nucleiResults;
           
           result.scan_status.vulnerability_scan = {
             success: nucleiResults.success,
             error_type: nucleiResults.success ? null : 'nuclei_error',
-            message: nucleiResults.error || null
+            message: nucleiResults.error || null,
+            results_found: Array.isArray(nucleiResults.findings) && nucleiResults.findings.length > 0
           };
           
           if (!nucleiResults.success && nucleiResults.error) {
@@ -509,6 +611,113 @@ class Scanner {
         } catch (enhancementError) {
           console.error(`Port enhancement error: ${enhancementError.message}`);
           // Don't fail for enhancement errors
+        }
+      }
+      
+      // Phase 4, Step 2: Perform alternative detection if traditional scanning yields limited results
+      // Only run alternative detection if we have no ports detected or very limited HTTP information
+      const shouldRunAlternativeDetection = (
+        (result.ports.length === 0) || 
+        (result.scan_status.http_analysis.success === false) ||
+        (result.scan_status.vulnerability_scan && result.scan_status.vulnerability_scan.success === false)
+      );
+      
+      if (this.enableAlternativeDetection && shouldRunAlternativeDetection) {
+        console.log('Traditional scanning yielded limited results, trying alternative detection methods');
+        
+        try {
+          // Initialize alternative detection section if it doesn't exist
+          result.alternative_detection = {
+            performed: true,
+            success: false,
+            methods_applied: [],
+            technologies_detected: [],
+            tls_info: null,
+            http_fingerprint: null
+          };
+          
+          // Run alternative detection
+          const alternativeResults = await this.performAlternativeDetection(target);
+          
+          // Update result with alternative detection findings
+          result.alternative_detection = alternativeResults;
+          
+          // If traditional scanning found no ports but alternative detection found technologies,
+          // add an HTTP entry to the ports list for better visibility
+          if (result.ports.length === 0 && alternativeResults.technologies_detected.length > 0) {
+            const protocol = targetInfo.protocol || 'http';
+            const port = protocol === 'https' ? 443 : 80;
+            
+            result.ports.push({
+              port: port,
+              protocol: 'tcp',
+              service: protocol,
+              product: protocol,
+              version: '',
+              state: 'filtered', // Mark as filtered since we couldn't directly detect it
+              detection_method: 'alternative',
+              technologies: alternativeResults.technologies_detected
+                .map(tech => tech.name + (tech.version ? ' ' + tech.version : ''))
+                .join(', ')
+            });
+            
+            // Update scan status to reflect that we found something with alternative methods
+            result.scan_status.port_scan.results_found = true;
+            result.scan_status.port_scan.message = 'Detected through alternative methods';
+          }
+          
+          // If we have SSL/TLS info, enhance the result
+          if (alternativeResults.tls_info) {
+            result.ssl_info = alternativeResults.tls_info;
+          }
+          
+          // If HTTP fingerprinting was successful, enhance HTTP section
+          if (alternativeResults.http_fingerprint) {
+            // Enhance HTTP section with additional security headers if not already present
+            if (!result.http) {
+              result.http = {
+                server: alternativeResults.http_fingerprint.headers['server'] || 'unknown',
+                contentType: alternativeResults.http_fingerprint.content_type || '',
+                statusCode: alternativeResults.http_fingerprint.status || 0,
+                statusMessage: alternativeResults.http_fingerprint.status_text || ''
+              };
+            }
+            
+            // Enhance security headers if available
+            if (!result.http.securityHeaders && alternativeResults.http_fingerprint.headers) {
+              const headers = alternativeResults.http_fingerprint.headers;
+              result.http.securityHeaders = {
+                hasStrictTransportSecurity: headers['strict-transport-security'] !== undefined,
+                hasContentSecurityPolicy: headers['content-security-policy'] !== undefined,
+                hasXContentTypeOptions: headers['x-content-type-options'] !== undefined,
+                hasXFrameOptions: headers['x-frame-options'] !== undefined,
+                hasXXSSProtection: headers['x-xss-protection'] !== undefined,
+                hasReferrerPolicy: headers['referrer-policy'] !== undefined,
+                hasPermissionsPolicy: headers['permissions-policy'] !== undefined,
+                strictTransportSecurityValue: headers['strict-transport-security'] || null,
+                contentSecurityPolicyValue: headers['content-security-policy'] || null,
+                xContentTypeOptionsValue: headers['x-content-type-options'] || null,
+                xFrameOptionsValue: headers['x-frame-options'] || null,
+                xxssProtectionValue: headers['x-xss-protection'] || null,
+                referrerPolicyValue: headers['referrer-policy'] || null,
+                permissionsPolicyValue: headers['permissions-policy'] || null
+              };
+            }
+          }
+          
+          // Add detected security products to the result
+          if (alternativeResults.security_products && alternativeResults.security_products.length > 0) {
+            result.security_products = alternativeResults.security_products;
+          }
+          
+        } catch (altError) {
+          console.error(`Alternative detection failed: ${altError.message}`);
+          // Don't fail the entire scan if alternative detection fails
+          result.alternative_detection = {
+            performed: true,
+            success: false,
+            error: altError.message
+          };
         }
       }
       
@@ -687,10 +896,8 @@ class Scanner {
           nmapArgs.push('-F');
           nmapArgs.push('--min-rate=300');
         } else if (!isAggressive) {
-          // Add options for standard scan
+          // Base options for standard scan
           nmapArgs.push('--data-length=24');
-          nmapArgs.push('--randomize-hosts');
-          nmapArgs.push('--spoof-mac=0');
         }
         
         // Don't ping the host (assume it's up)
@@ -708,6 +915,42 @@ class Scanner {
           nmapArgs.push('-T2');
         } else {
           nmapArgs.push('-T2');
+        }
+        
+        // Phase 4, Step 1: Apply evasion techniques if enabled
+        if (this.enableEvasion) {
+          // Determine evasion profile - use more aggressive evasion for slow targets
+          let evasionProfile = this.evasionProfile;
+          
+          if (options.evasionProfile) {
+            // Override with options if provided
+            evasionProfile = options.evasionProfile;
+          } else if (isQuickScan) {
+            // Use minimal evasion for quick scans
+            evasionProfile = 'minimal';
+          } else if (this.targetResponseCategory === 'slow') {
+            // Use more aggressive evasion for slow targets
+            evasionProfile = 'aggressive';
+          }
+          
+          // Apply evasion techniques based on profile
+          nmapArgs = this.evasionTechniques.applyEvasionTechniques(nmapArgs, {
+            evasionProfile: evasionProfile,
+            isQuickScan: isQuickScan
+          });
+          
+          console.log(`Applied evasion techniques with profile: ${evasionProfile}`);
+        } else {
+          // If evasion is disabled, just add some basic options
+          nmapArgs.push('--randomize-hosts');
+        }
+        
+        // Phase 4, Step 3: Apply proxy configuration to Nmap if enabled
+        if (this.enableProxySupport) {
+          nmapArgs = this.proxySupport.applyProxyToNmap(nmapArgs, {
+            isQuickScan: isQuickScan
+          });
+          console.log('Applied proxy configuration to Nmap arguments');
         }
         
         // Join all arguments into a string
@@ -821,6 +1064,21 @@ class Scanner {
           nmapArgs.push('-T2');
         }
         
+        // Phase 4, Step 1: Apply evasion techniques for UDP scans if enabled
+        if (this.enableEvasion) {
+          // For UDP scans, always use minimal evasion profile to avoid excessive slowness
+          // UDP scans are naturally slow, so we don't want to make them even slower
+          const evasionProfile = 'minimal';
+          
+          // Apply minimal evasion techniques
+          nmapArgs = this.evasionTechniques.applyEvasionTechniques(nmapArgs, {
+            evasionProfile: evasionProfile,
+            isQuickScan: true // Treat UDP scans as quick scans for evasion
+          });
+          
+          console.log(`Applied minimal evasion techniques for UDP scan`);
+        }
+        
         // Join all arguments into a string
         const nmapOptions = nmapArgs.join(' ');
         
@@ -898,21 +1156,30 @@ class Scanner {
    */
   async analyzeHttp(url, timeout) {
     try {
-      // Make HTTP request
-      const response = await axios.get(url, {
-        timeout: timeout,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate',
-          'Upgrade-Insecure-Requests': '1',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
-        validateStatus: () => true, // Don't throw on error status codes
-        maxRedirects: 2
-      });
+      // Make HTTP request with proxy support if enabled
+      let response;
+      if (this.enableProxySupport) {
+        response = await this.proxySupport.makeProxiedRequest(url, {
+          maxRetries: 2,
+          retryDelay: 1000,
+          fallbackToNoProxy: true
+        });
+      } else {
+        response = await axios.get(url, {
+          timeout: timeout,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Upgrade-Insecure-Requests': '1',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          },
+          validateStatus: () => true, // Don't throw on error status codes
+          maxRedirects: 2
+        });
+      }
       
       // Extract and analyze headers
       const headers = response.headers;
@@ -976,6 +1243,53 @@ class Scanner {
   }
   
   /**
+   * Perform alternative detection methods when traditional scanning fails
+   * @param {string} target - Target URL or hostname
+   * @param {Object} options - Detection options
+   * @returns {Promise<Object>} - Alternative detection results
+   */
+  async performAlternativeDetection(target, options = {}) {
+    try {
+      console.log(`Performing alternative detection methods for ${target}`);
+      
+      // Check if alternative detection is enabled
+      if (!this.enableAlternativeDetection) {
+        console.log('Alternative detection is disabled, skipping');
+        return {
+          success: false,
+          reason: 'alternative_detection_disabled',
+          methods_applied: []
+        };
+      }
+      
+      // Calculate adaptive timeout
+      const timeout = this.calculateAdaptiveTimeout('http', this.timeout);
+      
+      // Run alternative detection with proper timeout
+      const detectionResult = await this.alternativeDetection.detect(target, {
+        timeout: timeout,
+        ...options
+      });
+      
+      console.log(`Alternative detection completed with ${detectionResult.methods_applied.length} methods applied`);
+      
+      if (detectionResult.technologies_detected.length > 0) {
+        console.log(`Detected ${detectionResult.technologies_detected.length} technologies through alternative methods`);
+      }
+      
+      return detectionResult;
+    } catch (error) {
+      console.error(`Alternative detection error: ${error.message}`);
+      return {
+        success: false,
+        reason: 'alternative_detection_error',
+        error: error.message,
+        methods_applied: []
+      };
+    }
+  }
+  
+  /**
    * Normalize a target URL or hostname
    * @param {string} target - Target URL or hostname
    * @returns {Object} - Normalized target information
@@ -1003,6 +1317,16 @@ class Scanner {
         protocol: target.startsWith('https://') ? 'https' : 'http'
       };
     }
+  }
+  
+  /**
+   * Clean up scanner resources including proxy connections
+   */
+  cleanup() {
+    if (this.enableProxySupport && this.proxySupport) {
+      this.proxySupport.cleanup();
+    }
+    console.log('Scanner cleanup completed');
   }
 }
 

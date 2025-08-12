@@ -6,7 +6,7 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "mkdir -p scan-results"
+    "postinstall": "if not exist scan-results mkdir scan-results"
   },
   "keywords": [
     "scanner",
@@ -19,6 +19,7 @@
   "description": "A website security scanner that replaces the n8n workflow while maintaining compatibility with the existing NetSage backend.",
   "dependencies": {
     "axios": "^1.11.0",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
