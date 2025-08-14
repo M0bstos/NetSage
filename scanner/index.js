@@ -194,15 +194,30 @@ function formatResultsForBackend(requestId, scanResults) {
     });
   }
   
-  // Add Nuclei findings if available
-  if (scanResults.nuclei && scanResults.nuclei.findings && scanResults.nuclei.findings.length > 0) {
-    console.log(`Found ${scanResults.nuclei.findings.length} vulnerabilities/findings to report`);
+  // ENHANCED: Add Nuclei findings if available, with extra checks
+  // First check explicitly if nuclei findings are available
+  // Check both places where Nuclei findings might be stored
+  let nucleiFindings = [];
+  
+  // Check if findings are in nuclei.findings (regular path)
+  if (scanResults.nuclei && Array.isArray(scanResults.nuclei.findings) && scanResults.nuclei.findings.length > 0) {
+    nucleiFindings = scanResults.nuclei.findings;
+    console.log('Found Nuclei findings in scanResults.nuclei.findings');
+  } 
+  // Check if findings are directly in the vulnerabilities property (already processed)
+  else if (scanResults.vulnerabilities && Array.isArray(scanResults.vulnerabilities) && scanResults.vulnerabilities.length > 0) {
+    nucleiFindings = scanResults.vulnerabilities;
+    console.log('Found Nuclei findings in scanResults.vulnerabilities');
+  }
+  
+  if (nucleiFindings.length > 0) {
+    console.log(`Found ${nucleiFindings.length} vulnerabilities/findings to report`);
     
     // Group findings by severity
     const severityOrder = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
     const bySeverity = {};
     
-    scanResults.nuclei.findings.forEach(finding => {
+    nucleiFindings.forEach(finding => {
       const sev = finding.severity || 'unknown';
       if (!bySeverity[sev]) bySeverity[sev] = [];
       bySeverity[sev].push(finding);
@@ -216,14 +231,14 @@ function formatResultsForBackend(requestId, scanResults) {
     });
     
     // Format findings for the backend
-    formattedResults.vulnerabilities = scanResults.nuclei.findings.map(finding => {
+    formattedResults.vulnerabilities = nucleiFindings.map(finding => {
       return {
         target: target,
         name: finding.name || 'Unknown',
         severity: finding.severity || 'unknown',
         type: finding.type || 'unknown',
         description: finding.description || '',
-        matched: finding.matched || finding.host || '',
+        matched: finding.matched || finding.url || finding.host || '',
         cves: finding.cve || [],
         references: finding.reference || [],
         tags: finding.tags || [],
@@ -233,7 +248,7 @@ function formatResultsForBackend(requestId, scanResults) {
     
     // Update vulnerability summary
     formattedResults.vulnerability_summary = {
-      total_count: scanResults.nuclei.findings.length,
+      total_count: nucleiFindings.length,
       by_severity: {}
     };
     
@@ -245,6 +260,9 @@ function formatResultsForBackend(requestId, scanResults) {
         formattedResults.vulnerability_summary.by_severity[sev] = 0;
       }
     });
+    
+    // Add a marker to indicate we have processed the findings
+    formattedResults.nuclei_findings_processed = true;
   } else {
     console.log('No vulnerability findings to report');
     // Initialize summary with zero counts for all severity levels
@@ -312,13 +330,106 @@ function formatResultsForBackend(requestId, scanResults) {
  * @param {number} retryCount - Number of retries attempted (internal use)
  * @returns {Promise<boolean>} - Success status of the operation
  */
+// Simple check to ensure we have the latest Nuclei findings
+async function ensureNucleiResultsMerged(results) {
+  // Check if we already have vulnerabilities
+  if (results.vulnerabilities && results.vulnerabilities.length > 0) {
+    console.log(`Results already contain ${results.vulnerabilities.length} vulnerabilities - no need to check Nuclei files`);
+    return results;
+  }
+  
+  console.log('Final safety check for Nuclei findings before sending to backend...');
+  
+  try {
+    // Look for the most recent Nuclei file
+    const resultsDir = RESULTS_DIR;
+    const files = fs.readdirSync(resultsDir)
+      .filter(file => file.startsWith('nuclei-'))
+      .map(file => ({
+        name: file,
+        path: path.join(resultsDir, file),
+        time: fs.statSync(path.join(resultsDir, file)).mtime.getTime()
+      }))
+      .sort((a, b) => b.time - a.time);
+    
+    if (files.length > 0) {
+      const latestFile = files[0];
+      const fileAge = Date.now() - latestFile.time;
+      
+      // Only use the file if it's recent (created in the last 5 minutes)
+      if (fileAge < 300000) { 
+        const content = fs.readFileSync(latestFile.path, 'utf8');
+        if (content && content.trim() !== '[]') {
+          const findings = JSON.parse(content);
+          if (Array.isArray(findings) && findings.length > 0) {
+            console.log(`Safety check found ${findings.length} Nuclei findings in ${latestFile.name}`);
+            
+            // Get target from results
+            const target = results.scan_data && results.scan_data.length > 0 
+              ? results.scan_data[0].target 
+              : 'unknown';
+            
+            // Format the findings for backend
+            results.vulnerabilities = findings.map(finding => ({
+              target: target,
+              name: finding.name || 'Unknown',
+              severity: finding.severity || 'unknown',
+              type: finding.type || 'unknown',
+              description: finding.description || '',
+              matched: finding.matched || finding.url || finding.host || '',
+              cves: finding.cve || [],
+              references: finding.reference || [],
+              tags: finding.tags || [],
+              timestamp: finding.timestamp || new Date().toISOString()
+            }));
+            
+            // Update vulnerability summary
+            const severityOrder = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
+            const bySeverity = {};
+            findings.forEach(finding => {
+              const sev = finding.severity || 'unknown';
+              if (!bySeverity[sev]) bySeverity[sev] = 0;
+              bySeverity[sev]++;
+            });
+            
+            results.vulnerability_summary = {
+              total_count: findings.length,
+              by_severity: {}
+            };
+            
+            severityOrder.forEach(sev => {
+              results.vulnerability_summary.by_severity[sev] = bySeverity[sev] || 0;
+            });
+            
+            console.log('Successfully merged Nuclei findings in safety check');
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`Error in Nuclei safety check: ${error.message}`);
+  }
+  
+  return results;
+}
+
 async function sendResultsToBackend(requestId, results, retryCount = 0) {
   const MAX_RETRIES = 3;
   const RETRY_DELAY = 5000; // 5 seconds
   
+  // Simple safety check to ensure Nuclei results are merged before sending
+  results = await ensureNucleiResultsMerged(results);
+  
   try {
     console.log(`Sending results for request ${requestId} to ${CALLBACK_URL}`);
     console.log(`Payload size: ${JSON.stringify(results).length} bytes`);
+    
+    // Log whether vulnerabilities were found
+    if (results.vulnerabilities && results.vulnerabilities.length > 0) {
+      console.log(`Sending payload with ${results.vulnerabilities.length} vulnerabilities`);
+    } else {
+      console.log('No vulnerabilities included in the payload');
+    }
     
     // Save a copy of the payload for debugging
     try {
@@ -516,39 +627,129 @@ async function runScan(target, requestId) {
     
     console.log(`Scan completed in ${(duration / 1000).toFixed(2)} seconds`);
     
-    // FIXED: Check if we need to wait for and merge Nuclei results
-    if (results.nuclei && results.nuclei.outputFile) {
-      try {
-        // Wait a bit to make sure any ongoing file operations complete
-        console.log('Ensuring all Nuclei results are properly captured...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
+    // SIMPLE FIX: Wait for Nuclei scan to complete and get its results
+    console.log('Waiting for Nuclei scan to complete (15 seconds)...');
+    
+    // Initialize nuclei findings array
+    let nucleiFindings = [];
+    
+    // Wait for Nuclei to complete (simple fixed wait period)
+    // This gives enough time for the Nuclei scan to finish and write results
+    await new Promise(resolve => {
+      const waitTime = 15000; // 15 seconds wait
+      const checkInterval = 1000; // Check every second
+      let elapsed = 0;
+      
+      // Check periodically for new Nuclei files
+      const intervalId = setInterval(() => {
+        elapsed += checkInterval;
+        console.log(`Waiting for Nuclei scan: ${elapsed/1000}s of ${waitTime/1000}s elapsed...`);
         
-        // Try to read the output file directly
-        const outputFile = results.nuclei.outputFile;
-        if (fs.existsSync(outputFile)) {
-          const jsonContent = fs.readFileSync(outputFile, 'utf8');
-          if (jsonContent && jsonContent.trim().length > 0) {
-            try {
-              const findings = JSON.parse(jsonContent);
-              if (Array.isArray(findings) && findings.length > 0) {
-                console.log(`Merging ${findings.length} Nuclei findings from file ${outputFile}`);
-                results.nuclei.findings = findings;
-                
-                // Update scan status
-                if (!results.scan_status.vulnerability_scan) {
-                  results.scan_status.vulnerability_scan = {};
+        // Try to find any new Nuclei results
+        try {
+          const resultsDir = path.join(__dirname, 'scan-results');
+          const files = fs.readdirSync(resultsDir)
+            .filter(file => file.startsWith('nuclei-'))
+            .map(file => ({
+              name: file,
+              path: path.join(resultsDir, file),
+              time: fs.statSync(path.join(resultsDir, file)).mtime.getTime()
+            }))
+            .sort((a, b) => b.time - a.time); // Sort by most recent
+          
+          if (files.length > 0) {
+            const recentFile = files[0];
+            const fileAge = Date.now() - recentFile.time;
+            console.log(`Most recent Nuclei file: ${recentFile.name} (${fileAge/1000}s old)`);
+            
+            // If we found a very recent file (created in the last minute)
+            if (fileAge < 60000) {
+              try {
+                const content = fs.readFileSync(recentFile.path, 'utf8');
+                if (content && content.trim() !== '[]') {
+                  const findings = JSON.parse(content);
+                  if (Array.isArray(findings) && findings.length > 0) {
+                    console.log(`Found ${findings.length} Nuclei findings in ${recentFile.name}`);
+                    nucleiFindings = findings;
+                    
+                    // We found results, can resolve early
+                    clearInterval(intervalId);
+                    resolve();
+                    return;
+                  }
                 }
-                results.scan_status.vulnerability_scan.success = true;
-                results.scan_status.vulnerability_scan.results_found = findings.length > 0;
+              } catch (error) {
+                console.warn(`Error checking Nuclei file ${recentFile.name}: ${error.message}`);
               }
-            } catch (parseError) {
-              console.error(`Error parsing Nuclei results: ${parseError.message}`);
             }
           }
+        } catch (error) {
+          console.warn(`Error checking for Nuclei files: ${error.message}`);
         }
-      } catch (readError) {
-        console.error(`Error reading Nuclei results file: ${readError.message}`);
+        
+        // If time is up, resolve the promise
+        if (elapsed >= waitTime) {
+          clearInterval(intervalId);
+          resolve();
+        }
+      }, checkInterval);
+    });
+        
+    // After the wait period, check if we found any Nuclei findings
+    if (nucleiFindings.length > 0) {
+      console.log(`Successfully found ${nucleiFindings.length} Nuclei findings after waiting`);
+    } else {
+      console.log('No Nuclei findings found after waiting period');
+      
+      // Try one last check of the latest Nuclei file
+      try {
+        const resultsDir = path.join(__dirname, 'scan-results');
+        const newestFiles = fs.readdirSync(resultsDir)
+          .filter(file => file.startsWith('nuclei-'))
+          .map(file => ({
+            name: file,
+            path: path.join(resultsDir, file),
+            time: fs.statSync(path.join(resultsDir, file)).mtime.getTime()
+          }))
+          .sort((a, b) => b.time - a.time);
+          
+        if (newestFiles.length > 0) {
+          const latestFile = newestFiles[0];
+          try {
+            const content = fs.readFileSync(latestFile.path, 'utf8');
+            if (content && content.trim() !== '[]') {
+              const findings = JSON.parse(content);
+              if (Array.isArray(findings) && findings.length > 0) {
+                console.log(`Last chance: Found ${findings.length} Nuclei findings in ${latestFile.name}`);
+                nucleiFindings = findings;
+              }
+            }
+          } catch (error) {
+            console.warn(`Error reading the latest Nuclei file: ${error.message}`);
+          }
+        }
+      } catch (error) {
+        console.error(`Error in final Nuclei check: ${error.message}`);
       }
+    }
+    
+    // Merge any found Nuclei findings into the results
+    if (nucleiFindings.length > 0) {
+      if (!results.nuclei) {
+        results.nuclei = {};
+      }
+      results.nuclei.findings = nucleiFindings;
+      
+      // Update scan status
+      if (!results.scan_status.vulnerability_scan) {
+        results.scan_status.vulnerability_scan = {};
+      }
+      results.scan_status.vulnerability_scan.success = true;
+      results.scan_status.vulnerability_scan.results_found = true;
+      
+      console.log(`Successfully merged ${nucleiFindings.length} Nuclei findings into scan results`);
+    } else {
+      console.log('No Nuclei findings found to merge with scan results');
     }
     
     // Format results for the backend

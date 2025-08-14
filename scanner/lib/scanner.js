@@ -508,36 +508,59 @@ class Scanner {
           
           console.log(`Running Nuclei scan on ${nucleiUrl} with timeout: ${nucleiTimeout}ms`);
           
-          // FIXED: Make sure to await the complete Nuclei scan process
+          // ENHANCED: Make sure to await and process the complete Nuclei scan
           const nucleiResults = await this.nucleiScanner.scan(nucleiUrl);
           
+          // Always store the output file path for later use
+          if (!result.nuclei) {
+            result.nuclei = {};
+          }
+          result.nuclei.outputFile = nucleiResults.outputFile;
+          
           // Check if we need to wait for findings to be saved to the output file
-          if (nucleiResults.outputFile && !nucleiResults.findings) {
+          if (nucleiResults.outputFile && (!nucleiResults.findings || !nucleiResults.findings.length)) {
             console.log('Waiting for Nuclei findings to be processed from output file...');
             
-            // Wait for a short time to ensure file processing completes
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Wait for a longer time to ensure file processing completes
+            await new Promise(resolve => setTimeout(resolve, 5000));
             
             try {
               // Read the output file directly to get the findings
               const outputFile = nucleiResults.outputFile;
               if (fsSync.existsSync(outputFile)) {
                 const jsonContent = await fs.promises.readFile(outputFile, 'utf8');
-                const findings = JSON.parse(jsonContent);
-                
-                if (Array.isArray(findings) && findings.length > 0) {
-                  console.log(`Found ${findings.length} vulnerability findings in output file`);
-                  nucleiResults.findings = findings;
-                  nucleiResults.success = true;
+                if (jsonContent && jsonContent.trim() && jsonContent.trim() !== '[]') {
+                  const findings = JSON.parse(jsonContent);
+                  
+                  if (Array.isArray(findings) && findings.length > 0) {
+                    console.log(`Found ${findings.length} vulnerability findings in output file`);
+                    nucleiResults.findings = findings;
+                    nucleiResults.success = true;
+                    
+                    // Log the first finding as a sanity check
+                    if (findings[0]) {
+                      console.log(`First finding: ${findings[0].name} (${findings[0].severity})`);
+                    }
+                  }
+                } else {
+                  console.log(`Output file exists but contains no findings: ${outputFile}`);
                 }
+              } else {
+                console.log(`Output file does not exist: ${outputFile}`);
               }
             } catch (fileError) {
               console.error(`Error reading Nuclei findings from file: ${fileError.message}`);
             }
           }
           
-          result.nuclei = nucleiResults;
+          // Merge the Nuclei results
+          result.nuclei = {
+            ...result.nuclei,
+            ...nucleiResults,
+            outputFile: nucleiResults.outputFile // Always keep output file path
+          };
           
+          // Update scan status with more explicit checks
           result.scan_status.vulnerability_scan = {
             success: nucleiResults.success,
             error_type: nucleiResults.success ? null : 'nuclei_error',
