@@ -7,8 +7,9 @@ const groqService = require('../services/groqService');
  * - Retrieves scan results without report text
  * - Generates report via Groq LLM
  * - Saves report back to database
+ * @param {string} [requestId] - Optional specific request ID to generate reports for
  */
-async function generateReports() {
+async function generateReports(requestId = null) {
   const client = await pool.connect();
   
   try {
@@ -16,30 +17,69 @@ async function generateReports() {
     await client.query('BEGIN');
     
     // Find scan results without reports
-    // Look for completed scan_requests with scan_results entries that have no report
-    const pendingReportsQuery = `
-      SELECT 
-        sr.id as result_id,
-        sr.request_id,
-        array_agg(json_build_object(
-          'target', sr.target,
-          'port', sr.port,
-          'service', sr.service,
-          'product', sr.product,
-          'version', sr.version
-        )) as scan_data
-      FROM scan_results sr
-      JOIN scan_requests sq ON sr.request_id = sq.id
-      WHERE sq.status = 'completed' 
-        AND (sr.report IS NULL OR sr.report = '')
-      GROUP BY sr.request_id, sr.id
-    `;
+    let pendingReportsQuery;
+    let queryParams = [];
     
-    const pendingReportsResult = await client.query(pendingReportsQuery);
+    if (requestId) {
+      // If specific requestId is provided, only process that one
+      pendingReportsQuery = `
+        SELECT 
+          sr.id as result_id,
+          sr.request_id,
+          json_build_object(
+            'target', sr.target,
+            'port', sr.port,
+            'service', sr.service,
+            'product', sr.product,
+            'version', sr.version,
+            'protocol', sr.protocol,
+            'state', sr.state,
+            'banner', sr.banner
+          ) as scan_data,
+          sr.http_security,
+          sr.vulnerabilities,
+          sr.vulnerability_summary
+        FROM scan_results sr
+        JOIN scan_requests sq ON sr.request_id = sq.id
+        WHERE sq.status = 'completed' 
+          AND (sr.report IS NULL OR sr.report = '')
+          AND sr.request_id = $1
+      `;
+      queryParams.push(requestId);
+    } else {
+      // Otherwise, find all scan results without reports
+      pendingReportsQuery = `
+        SELECT 
+          sr.id as result_id,
+          sr.request_id,
+          json_build_object(
+            'target', sr.target,
+            'port', sr.port,
+            'service', sr.service,
+            'product', sr.product,
+            'version', sr.version,
+            'protocol', sr.protocol,
+            'state', sr.state,
+            'banner', sr.banner
+          ) as scan_data,
+          sr.http_security,
+          sr.vulnerabilities,
+          sr.vulnerability_summary
+        FROM scan_results sr
+        JOIN scan_requests sq ON sr.request_id = sq.id
+        WHERE sq.status = 'completed' 
+          AND (sr.report IS NULL OR sr.report = '')
+      `;
+    }
+    
+    const pendingReportsResult = await client.query(pendingReportsQuery, queryParams);
     console.log(`Found ${pendingReportsResult.rows.length} scan results needing reports`);
     
     if (pendingReportsResult.rows.length === 0) {
-      console.log('No new reports to generate');
+      const message = requestId 
+        ? `No reports to generate for request ID: ${requestId}`
+        : 'No new reports to generate';
+      console.log(message);
       return;
     }
     
@@ -49,8 +89,35 @@ async function generateReports() {
       console.log(`Generating report for scan result ID: ${result_id}, request ID: ${request_id}`);
       
       try {
-        // Call Groq API to generate report
-        const report = await groqService.generateReport(scan_data);
+        // Convert scan_data to array if it's not already (since we changed the query)
+        const scanDataArray = Array.isArray(scan_data) ? scan_data : [scan_data];
+        
+        // Parse vulnerabilities if they exist
+        let vulnerabilities = [];
+        if (row.vulnerabilities) {
+          try {
+            vulnerabilities = typeof row.vulnerabilities === 'string' 
+              ? JSON.parse(row.vulnerabilities) 
+              : row.vulnerabilities;
+          } catch (parseError) {
+            console.error('Error parsing vulnerabilities:', parseError);
+          }
+        }
+        
+        // Parse HTTP security if it exists
+        let httpSecurity = null;
+        if (row.http_security) {
+          try {
+            httpSecurity = typeof row.http_security === 'string'
+              ? JSON.parse(row.http_security)
+              : row.http_security;
+          } catch (parseError) {
+            console.error('Error parsing HTTP security:', parseError);
+          }
+        }
+        
+        // Call Groq API to generate report with enhanced data
+        const report = await groqService.generateReport(scanDataArray, vulnerabilities, httpSecurity);
         
         // Update scan_results with the generated report
         await client.query(

@@ -40,3 +40,41 @@ CREATE INDEX idx_scan_results_request_id ON scan_results(request_id);
 COMMENT ON TABLE scan_requests IS 'Stores website scan requests from frontend with their current status';
 COMMENT ON TABLE raw_scan_data IS 'Stores the raw JSON data received from n8n workflow';
 COMMENT ON TABLE scan_results IS 'Stores the cleaned and processed scan results with generated security report';
+
+-- Add new columns to scan_results for additional data
+ALTER TABLE scan_results ADD COLUMN http_security JSONB;
+ALTER TABLE scan_results ADD COLUMN vulnerabilities JSONB;
+ALTER TABLE scan_results ADD COLUMN vulnerability_summary JSONB;
+ALTER TABLE scan_results ADD COLUMN scan_metadata JSONB;
+ALTER TABLE scan_results ADD COLUMN scan_timestamp TIMESTAMP;
+ALTER TABLE scan_results ADD COLUMN scan_duration INTEGER;
+
+-- Add new columns to scan_results table for additional data fields
+-- Run this script if you haven't already added these columns
+
+-- Check if columns already exist and add them if they don't
+DO $$
+BEGIN
+    -- Add protocol column if it doesn't exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='scan_results' AND column_name='protocol') THEN
+        ALTER TABLE scan_results ADD COLUMN protocol TEXT;
+    END IF;
+
+    -- Add state column if it doesn't exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='scan_results' AND column_name='state') THEN
+        ALTER TABLE scan_results ADD COLUMN state TEXT;
+    END IF;
+
+    -- Add banner column if it doesn't exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='scan_results' AND column_name='banner') THEN
+        ALTER TABLE scan_results ADD COLUMN banner TEXT;
+    END IF;
+END $$;
+
+-- Add comments explaining these new columns
+COMMENT ON COLUMN scan_results.protocol IS 'Network protocol (tcp, udp, etc.)';
+COMMENT ON COLUMN scan_results.state IS 'Port state (open, closed, filtered)';
+COMMENT ON COLUMN scan_results.banner IS 'Service banner information if available';

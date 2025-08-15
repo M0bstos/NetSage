@@ -32,13 +32,24 @@ export interface ScanReportResponse extends ApiResponse {
 // Scan-related Types
 export type ScanStatus = 'pending' | 'scanning' | 'processing' | 'generating_report' | 'completed' | 'failed';
 
+export interface VulnerabilitySummary {
+  severity: 'high' | 'medium' | 'low';
+  description: string;
+  recommendation?: string;
+}
+
 export interface ScanResult {
   target: string;
   port: number;
   service: string;
   product: string;
   version: string;
-  report: string;
+  protocol?: string;
+  state?: string;
+  report?: string;
+  vulnerability_summary?: VulnerabilitySummary;
+  http_security?: any;
+  scan_metadata?: any;
 }
 
 // Error handling

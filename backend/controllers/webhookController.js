@@ -58,12 +58,19 @@ class WebhookController {
       
       console.log(`Received scan results for request ID: ${request_id}`);
       
-      // Trigger processor to process this data immediately
-      // We now process data automatically as part of the workflow
+      // Check current state before processing
       try {
-        // Schedule immediate processing (will happen in the background)
-        const processorResult = await this._processData(request_id);
-        console.log(`Processing scheduled for request ${request_id}`);
+        const currentState = await stateMachine.getCurrentState(request_id);
+        
+        // Only process if not already in a terminal state
+        if (currentState !== stateMachine.STATES.COMPLETED && 
+            currentState !== stateMachine.STATES.GENERATING_REPORT) {
+          // Schedule immediate processing (will happen in the background)
+          const processorResult = await this._processData(request_id);
+          console.log(`Processing scheduled for request ${request_id}`);
+        } else {
+          console.log(`Request ${request_id} is already in ${currentState} state, skipping processing`);
+        }
       } catch (processorError) {
         console.error(`Error scheduling processing for request ${request_id}:`, processorError);
       }
@@ -94,13 +101,31 @@ class WebhookController {
       // Run the processor
       let result;
       if (request_id) {
-        // Process specific request
-        result = await this._processData(request_id);
-        
-        if (!result) {
+        // Check current state before processing
+        try {
+          const currentState = await stateMachine.getCurrentState(request_id);
+          
+          // Only process if not already in a terminal state
+          if (currentState !== stateMachine.STATES.COMPLETED) {
+            // Process specific request
+            result = await this._processData(request_id);
+            
+            if (!result) {
+              return res.status(404).json({
+                success: false,
+                message: `Request ID ${request_id} not found or already processed`
+              });
+            }
+          } else {
+            return res.status(200).json({
+              success: true,
+              message: `Request ${request_id} is already in ${currentState} state, no processing needed`
+            });
+          }
+        } catch (stateError) {
           return res.status(404).json({
             success: false,
-            message: `Request ID ${request_id} not found or already processed`
+            message: `Request ID ${request_id} not found: ${stateError.message}`
           });
         }
       } else {
@@ -145,31 +170,84 @@ class WebhookController {
         return null;
       }
       
-      // Run processor on this specific request
-      const result = await runProcessor(requestId);
+      // Import scheduler service for direct processing
+      const schedulerService = require('../services/schedulerService');
       
-      // Update state based on processing result
-      if (result.success) {
+      // Process the data directly
+      console.log(`Processing data for request ${requestId}...`);
+      
+      // Step 1: Process raw data
+      try {
+        // Get the current state before making changes
+        const currentState = await stateMachine.getCurrentState(requestId);
+        console.log(`Current state for request ${requestId} is: ${currentState}`);
+        
+        // Only process data if state isn't already completed
+        if (currentState !== stateMachine.STATES.COMPLETED) {
+          // Check if we need to update to processing state
+          if (currentState !== stateMachine.STATES.PROCESSING) {
+            await stateMachine.changeState(requestId, stateMachine.STATES.PROCESSING, true);
+          }
+          
+          // Process the raw data
+          await schedulerService.processRequestData(requestId);
+          
+          // Only proceed to report generation if we aren't in completed state
+          const updatedState = await stateMachine.getCurrentState(requestId);
+          if (updatedState !== stateMachine.STATES.COMPLETED) {
+            // Update state to generating report
+            await stateMachine.changeState(requestId, stateMachine.STATES.GENERATING_REPORT, true);
+            
+            // Step 2: Generate report
+            await schedulerService.generateRequestReport(requestId);
+            
+            // Update state to completed
+            await stateMachine.changeState(requestId, stateMachine.STATES.COMPLETED, true);
+          }
+          
+          // Note: No need to send WebSocket update here as the stateMachine already emits events
+          // that the WebSocketService listens to when we call changeState above
+          
+        } else {
+          console.log(`Request ${requestId} is already in completed state, skipping processing`);
+        }
+        
+        return { success: true };
+      } catch (processingError) {
+        console.error(`Error in processing pipeline for request ${requestId}:`, processingError);
+        
+        // Set state to failed (if not already completed)
         try {
-          await stateMachine.changeState(requestId, stateMachine.STATES.GENERATING_REPORT);
+          // Check current state before changing
+          const currentState = await stateMachine.getCurrentState(requestId);
+          
+          // Set to failed, but don't force if in completed state
+          const force = currentState !== stateMachine.STATES.COMPLETED;
+          await stateMachine.changeState(requestId, stateMachine.STATES.FAILED, force);
+          
+          // No need to notify via WebSocket - the state machine does this automatically
         } catch (stateError) {
           console.error(`Error updating state for request ${requestId}:`, stateError);
         }
-      } else {
-        try {
-          await stateMachine.changeState(requestId, stateMachine.STATES.FAILED);
-        } catch (stateError) {
-          console.error(`Error updating state for request ${requestId}:`, stateError);
-        }
+        
+        return {
+          success: false,
+          error: processingError
+        };
       }
-      
-      return result;
     } catch (error) {
       console.error(`Error processing data for request ${requestId}:`, error);
       
-      // Set state to failed
+      // Set state to failed (if not already in a terminal state)
       try {
-        await stateMachine.changeState(requestId, stateMachine.STATES.FAILED);
+        // Check current state before changing
+        const currentState = await stateMachine.getCurrentState(requestId);
+        
+        // Set to failed, but don't force if in completed state
+        const force = currentState !== stateMachine.STATES.COMPLETED;
+        await stateMachine.changeState(requestId, stateMachine.STATES.FAILED, force);
+        
+        // No need to notify via WebSocket - the state machine does this automatically
       } catch (stateError) {
         console.error(`Error updating state for request ${requestId}:`, stateError);
       }

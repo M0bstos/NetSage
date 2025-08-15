@@ -236,14 +236,17 @@ function HomePage() {
       scanDate: new Date().toLocaleDateString(),
       overallScore: calculateScore(),
       scanDuration: "Completed",
-      vulnerabilities: scan.results.map(result => ({
-        id: result.port.toString(),
+      vulnerabilities: scan.results.map((result, index) => ({
+        // Create a unique ID by combining port, target and index
+        id: `${result.target}-${result.port}-${index}`,
         title: `${result.service} ${result.product || ""} ${result.version || ""}`.trim(),
-        severity: result.report.includes("high") ? "high" : 
-                 result.report.includes("medium") ? "medium" : "low",
-        description: result.report,
+        severity: result.report && typeof result.report === 'string' 
+                 ? (result.report.includes("high") ? "high" 
+                   : result.report.includes("medium") ? "medium" : "low")
+                 : (result.vulnerability_summary?.severity || "low"),
+        description: result.report || result.vulnerability_summary?.description || "No report available",
         affected: `${result.target}:${result.port}`,
-        recommendation: "Update service to latest version and apply security patches."
+        recommendation: result.vulnerability_summary?.recommendation || "Update service to latest version and apply security patches."
       })),
       compliance: [
         {

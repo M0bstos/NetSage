@@ -132,7 +132,7 @@ class ScanController {
         });
       }
       
-      // For completed state, fetch the scan results and report
+      // For completed state, fetch the scan results including report and all metadata
       const resultsQuery = `
         SELECT 
           sr.target, 
@@ -140,7 +140,16 @@ class ScanController {
           sr.service, 
           sr.product, 
           sr.version, 
-          sr.report
+          sr.report,
+          sr.protocol,
+          sr.state,
+          sr.banner,
+          sr.http_security,
+          sr.vulnerabilities,
+          sr.vulnerability_summary,
+          sr.scan_metadata,
+          sr.scan_timestamp,
+          sr.scan_duration
         FROM 
           scan_results sr
         WHERE 
@@ -158,10 +167,30 @@ class ScanController {
         });
       }
       
+      // Since each scan result now contains its own metadata, let's organize the response
+      // Extract common metadata from the first result if available
+      const firstResult = resultsResult.rows[0] || {};
+      
       res.json({
         success: true,
         status,
-        results: resultsResult.rows,
+        results: resultsResult.rows.map(row => ({
+          target: row.target,
+          port: row.port,
+          service: row.service,
+          product: row.product,
+          version: row.version,
+          protocol: row.protocol,
+          state: row.state,
+          banner: row.banner,
+          report: row.report
+        })),
+        httpSecurity: firstResult.http_security || null,
+        vulnerabilities: firstResult.vulnerabilities || [],
+        vulnerabilitySummary: firstResult.vulnerability_summary || null,
+        scanMetadata: firstResult.scan_metadata || null,
+        scanTimestamp: firstResult.scan_timestamp || null,
+        scanDuration: firstResult.scan_duration || null,
         requestId
       });
       

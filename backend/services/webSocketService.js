@@ -35,8 +35,14 @@ class WebSocketService {
       });
       
       // Handle disconnections
-      socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
+      socket.on('disconnect', (reason) => {
+        console.log(`Client disconnected: ${socket.id} - Reason: ${reason}`);
+        
+        // Clean up any subscriptions for this client
+        const rooms = [...socket.rooms].filter(room => room.startsWith('scan:'));
+        if (rooms.length > 0) {
+          console.log(`Cleaning up ${rooms.length} scan subscriptions for disconnected client`);
+        }
       });
     });
 
@@ -46,6 +52,14 @@ class WebSocketService {
     });
 
     console.log('WebSocket service initialized');
+  }
+
+  /**
+   * Check if WebSocket service is initialized
+   * @returns {boolean} - Whether the service is initialized
+   */
+  isInitialized() {
+    return !!this.io;
   }
 
   /**
@@ -60,11 +74,16 @@ class WebSocketService {
     
     const { requestId, newState, prevState, timestamp } = data;
     
+    if (!requestId) {
+      console.error('Cannot send update: Missing requestId');
+      return;
+    }
+    
     this.io.to(`scan:${requestId}`).emit('scanUpdate', {
       requestId,
       status: newState,
       previousStatus: prevState,
-      timestamp
+      timestamp: timestamp || new Date().toISOString()
     });
     
     console.log(`Sent update for scan ${requestId} to subscribed clients`);

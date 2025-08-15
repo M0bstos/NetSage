@@ -63,6 +63,8 @@ NetSage/
 
 - **Integration Guide**: See [integration-guide.md](./integration-guide.md) for frontend and n8n integration details
 - **Developer Guide**: See [backend-dev-guide.md](./backend-dev-guide.md) for implementation details and debugging
+- **Architecture Updates**: See [updated-architecture.md](./docs/updated-architecture.md) for details on the new event-based processing
+- **Testing Guide**: See [testing-guide.md](./docs/testing-guide.md) for information on how to test the system
 
 ## 🔄 Workflow
 

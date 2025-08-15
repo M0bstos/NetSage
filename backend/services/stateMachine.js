@@ -58,16 +58,28 @@ class StateMachine extends EventEmitter {
    * Change state of a scan request
    * @param {string} requestId - UUID of the scan request
    * @param {string} newState - State to transition to
+   * @param {boolean} force - Whether to force the transition even if not valid
    * @returns {Promise<boolean>} - Success status
    */
-  async changeState(requestId, newState) {
+  async changeState(requestId, newState, force = false) {
     try {
       // Get current state
       const currentState = await this.getCurrentState(requestId);
       
-      // Validate the transition
-      if (!this._isValidTransition(currentState, newState)) {
+      // Validate the transition (unless forced)
+      if (!force && !this._isValidTransition(currentState, newState)) {
         throw new Error(`Invalid state transition from ${currentState} to ${newState}`);
+      }
+      
+      // Don't update if state is the same
+      if (currentState === newState) {
+        console.log(`State for ${requestId} is already ${newState}, no update needed`);
+        return true;
+      }
+      
+      // Log if forcing an invalid transition
+      if (force && !this._isValidTransition(currentState, newState)) {
+        console.log(`Forcing invalid state transition from ${currentState} to ${newState} for request ${requestId}`);
       }
       
       // Update state in database

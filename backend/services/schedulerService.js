@@ -16,8 +16,8 @@ class SchedulerService {
    * Initialize the scheduler service
    */
   initialize() {
-    // Schedule job to process stuck requests every 10 minutes
-    this.jobs.stuckRequests = schedule.scheduleJob('*/10 * * * *', async () => {
+    // Only keep the stuck requests job to ensure nothing stays in a broken state
+    this.jobs.stuckRequests = schedule.scheduleJob('*/30 * * * *', async () => {
       console.log('Running scheduled job: Process stuck requests');
       try {
         const processedIds = await stateMachine.processStuckRequests();
@@ -27,28 +27,9 @@ class SchedulerService {
       }
     });
 
-    // Schedule job to process raw data every 5 minutes
-    this.jobs.processRawData = schedule.scheduleJob('*/5 * * * *', async () => {
-      console.log('Running scheduled job: Process raw data');
-      try {
-        const { cleanAndProcessData } = require('../processors/cleanAndProcessData');
-        await cleanAndProcessData();
-      } catch (error) {
-        console.error('Error in process raw data job:', error);
-      }
-    });
+    // Remove the periodic polling jobs - we'll only process requests directly when they come in
 
-    // Schedule job to generate reports every 5 minutes
-    this.jobs.generateReports = schedule.scheduleJob('*/5 * * * *', async () => {
-      console.log('Running scheduled job: Generate reports');
-      try {
-        await generateReports();
-      } catch (error) {
-        console.error('Error in generate reports job:', error);
-      }
-    });
-
-    console.log('Scheduler service initialized');
+    console.log('Scheduler service initialized - using event-based processing');
   }
 
   /**
@@ -87,6 +68,44 @@ class SchedulerService {
     }
     
     return false;
+  }
+
+  /**
+   * Process raw data for a specific request
+   * @param {string} requestId - UUID of the request to process
+   * @returns {Promise<boolean>} - Success status
+   */
+  async processRequestData(requestId) {
+    try {
+      console.log(`Processing data for request ${requestId}`);
+      const { cleanAndProcessData } = require('../processors/cleanAndProcessData');
+      
+      // Call cleanAndProcessData with a filter for this specific request
+      await cleanAndProcessData(requestId);
+      return true;
+    } catch (error) {
+      console.error(`Error processing data for request ${requestId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Generate report for a specific request
+   * @param {string} requestId - UUID of the request to generate report for
+   * @returns {Promise<boolean>} - Success status
+   */
+  async generateRequestReport(requestId) {
+    try {
+      console.log(`Generating report for request ${requestId}`);
+      const { generateReports } = require('../processors/generateReport');
+      
+      // Call generateReports with a filter for this specific request
+      await generateReports(requestId);
+      return true;
+    } catch (error) {
+      console.error(`Error generating report for request ${requestId}:`, error);
+      return false;
+    }
   }
 }
 
