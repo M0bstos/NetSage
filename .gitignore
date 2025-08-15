@@ -57,7 +57,8 @@ backend/package-lock.json
 credentials.json
 secrets.json
 
-# Project specific files
-docs/    # Entire docs folder in root directory
+# Project specific files - Entire docs folder in root directory (except .gitignore)
+/docs/*
+!/docs/.gitignore
 
 # Other documentation files should be tracked in git
