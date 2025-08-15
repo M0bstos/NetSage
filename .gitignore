@@ -47,6 +47,7 @@ debug.log
 
 # npm package files
 *.tgz
+backend/package-lock.json
 
 # dotenv environment variable files
 .env.*
@@ -57,6 +58,6 @@ credentials.json
 secrets.json
 
 # Project specific files
-docs/
+docs/    # Entire docs folder in root directory
 
 # Other documentation files should be tracked in git
